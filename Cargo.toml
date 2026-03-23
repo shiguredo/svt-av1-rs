@@ -19,7 +19,7 @@ source-build = []
 log = "0.4.27"
 
 [build-dependencies]
-bindgen = "0.72.0"
+bindgen = "0.72.1"
 shiguredo_cmake = "4.3.0"
 shiguredo_toml = "2026.1.0"
 
