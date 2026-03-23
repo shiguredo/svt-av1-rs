@@ -51,7 +51,6 @@ jobs:
           toolchain: stable
 
       - run: cargo fmt --all --check
-      - run: cargo check --features source-build
       - run: cargo clippy --features source-build -- -D warnings
       - run: cargo test --features source-build
 
