@@ -297,7 +297,7 @@ fn get_target_platform() -> String {
         }
         ("linux", "aarch64") => {
             let version_id = get_ubuntu_version_id();
-            format!("ubuntu-{version_id}_aarch64")
+            format!("ubuntu-{version_id}_arm64")
         }
         ("macos", "aarch64") => "macos_arm64".to_string(),
         ("windows", "x86_64") => "windows_x86_64".to_string(),
