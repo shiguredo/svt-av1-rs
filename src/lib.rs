@@ -657,6 +657,7 @@ pub struct Encoder {
     input_yuv: Vec<u8>,
     extra_data: Vec<u8>,
     frame_count: u64,
+    received_count: u64,
     width: usize,
     color_format: ColorFormat,
     eos: bool,
@@ -1238,6 +1239,7 @@ impl Encoder {
                 input_yuv,
                 extra_data,
                 frame_count: 0,
+                received_count: 0,
                 width: config.width,
                 color_format: config.color_format,
                 eos: false,
@@ -1313,6 +1315,10 @@ impl Encoder {
     ///
     /// 残りのエンコード結果は [`Encoder::next_frame()`] で取得できる
     pub fn finish(&mut self) -> Result<(), Error> {
+        // EOS 送信時はデータサイズを 0 にする必要がある
+        // n_filled_len が非ゼロのままだと SVT-AV1 が追加フレームとして解釈し、
+        // CBR モードでハングする場合がある
+        self.buffer_header.n_filled_len = 0;
         self.buffer_header.flags = sys::EB_BUFFERFLAG_EOS;
         self.buffer_header.pic_type = sys::EbAv1PictureType_EB_AV1_INVALID_PICTURE;
         let code =
@@ -1328,6 +1334,13 @@ impl Encoder {
     /// [`Encoder::encode()`] や [`Encoder::finish()`] の後には、
     /// このメソッドを、結果が `None` になるまで呼び出し続ける必要がある
     pub fn next_frame(&mut self) -> Option<EncodedFrame<'_>> {
+        // EOS 送信前に全フレーム受信済みの場合は API を呼ばずに None を返す。
+        // SVT-AV1 の低遅延モード (CBR) では svt_av1_enc_get_packet が
+        // pic_send_done=0 でもブロックするため、この早期リターンが必要。
+        if !self.eos && self.received_count >= self.frame_count {
+            return None;
+        }
+
         let mut output = std::ptr::null_mut();
         let pic_send_done = self.eos as u8;
         let code =
@@ -1344,6 +1357,7 @@ impl Encoder {
         if (frame.0.flags & sys::EB_BUFFERFLAG_EOS) != 0 {
             None
         } else {
+            self.received_count += 1;
             Some(frame)
         }
     }
