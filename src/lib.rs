@@ -747,6 +747,48 @@ impl Encoder {
             bad("EncoderConfig: target_bit_rate must be 0 for CRF mode")?;
         }
 
+        // FFI へ渡す際の縮小キャストで切り捨て・符号反転が起きないことを検証する
+        if let Some(v) = config.max_bit_rate
+            && v > u32::MAX as usize
+        {
+            bad("EncoderConfig: max_bit_rate must fit in u32")?;
+        }
+        if let Some(v) = config.starting_buffer_level_ms
+            && v > i64::MAX as u64
+        {
+            bad("EncoderConfig: starting_buffer_level_ms must fit in i64")?;
+        }
+        if let Some(v) = config.optimal_buffer_level_ms
+            && v > i64::MAX as u64
+        {
+            bad("EncoderConfig: optimal_buffer_level_ms must fit in i64")?;
+        }
+        if let Some(v) = config.maximum_buffer_size_ms
+            && v > i64::MAX as u64
+        {
+            bad("EncoderConfig: maximum_buffer_size_ms must fit in i64")?;
+        }
+        if let Some(v) = config.intra_period_length
+            && v.get() > i32::MAX as usize
+        {
+            bad("EncoderConfig: intra_period_length must fit in i32")?;
+        }
+        if let Some(v) = config.look_ahead_distance
+            && v > u32::MAX as usize
+        {
+            bad("EncoderConfig: look_ahead_distance must fit in u32")?;
+        }
+        if let Some(v) = config.tile_columns
+            && v.get() > i32::MAX as usize
+        {
+            bad("EncoderConfig: tile_columns must fit in i32")?;
+        }
+        if let Some(v) = config.tile_rows
+            && v.get() > i32::MAX as usize
+        {
+            bad("EncoderConfig: tile_rows must fit in i32")?;
+        }
+
         Ok(())
     }
 
