@@ -11,6 +11,12 @@
 
 ## develop
 
+### misc
+
+## 2026.1.0
+
+**リリース日**: 2026-03-31
+
 - [UPDATE] SVT-AV1 を v3.1.2 から v4.1.0 に更新する
   - @voluntas
 - [ADD] 8-bit / 10-bit フレームデータを表す `FrameData` enum を追加する
