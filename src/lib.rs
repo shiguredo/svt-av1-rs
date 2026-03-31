@@ -773,6 +773,14 @@ impl Encoder {
             let code = sys::svt_av1_enc_init_handle(&mut handle, svt_config.as_mut_ptr());
             Error::check(code, "svt_av1_enc_init_handle")?;
 
+            // FFI 境界の防御: 成功コードでも null が返った場合に備える
+            if handle.is_null() {
+                return Err(Error {
+                    function: "svt_av1_enc_init_handle (null handle)",
+                    code: sys::EbErrorType_EB_ErrorBadParameter,
+                });
+            }
+
             let mut handle = EncoderHandle {
                 inner: handle,
                 initialized: false,
