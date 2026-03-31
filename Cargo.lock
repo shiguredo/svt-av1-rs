@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "shiguredo_dav1d"
-version = "2026.1.0-canary.4"
+version = "2026.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f1ca548471665e4da888b8f419568e07bc5ed9b9569e4a916ef7b5629318244"
+checksum = "bc6287d7cc9b0110e8c316642cf53434bd15220510c325e1e1235a41d3cf7f60"
 dependencies = [
  "bindgen",
  "shiguredo_toml",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "shiguredo_svt_av1"
-version = "2026.1.0"
+version = "2026.1.1"
 dependencies = [
  "bindgen",
  "log",
