@@ -1333,7 +1333,11 @@ impl Encoder {
             FrameData::I420 { y, u, v } | FrameData::I42010 { y, u, v } => (*y, *u, *v),
         };
 
-        if self.input_yuv.len() != y.len() + u.len() + v.len() {
+        let total_len = y
+            .len()
+            .checked_add(u.len())
+            .and_then(|s| s.checked_add(v.len()));
+        if total_len != Some(self.input_yuv.len()) {
             Error::check(
                 sys::EbErrorType_EB_ErrorBadParameter,
                 "shiguredo_svt_av1::Encoder::encode",
