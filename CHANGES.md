@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] external-dependencies のキー名を `git` から `url` に変更し `.git` サフィックスを削除する
+  - @voluntas
 - [UPDATE] SVT-AV1 を v3.1.2 から v4.0.1 に更新する
   - @voluntas
 - [ADD] 8-bit / 10-bit フレームデータを表す `FrameData` enum を追加する

@@ -336,7 +336,7 @@ fn get_git_url_and_version() -> (String, String) {
         .and_then(|v| v.get(LIB_NAME))
         .map(|v| {
             (
-                v.get("git").and_then(|s| s.as_str()),
+                v.get("url").and_then(|s| s.as_str()),
                 v.get("version").and_then(|s| s.as_str()),
             )
         })
