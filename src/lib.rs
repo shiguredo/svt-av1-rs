@@ -675,6 +675,28 @@ impl Encoder {
         if config.width == 0 || config.height == 0 {
             bad("EncoderConfig: width/height must be > 0")?;
         }
+        if config.width > u32::MAX as usize || config.height > u32::MAX as usize {
+            bad("EncoderConfig: width/height must fit in u32")?;
+        }
+        if config.fps_numerator > u32::MAX as usize
+            || config.fps_denominator > u32::MAX as usize
+            || config.target_bit_rate > u32::MAX as usize
+        {
+            bad("EncoderConfig: fps_numerator/fps_denominator/target_bit_rate must fit in u32")?;
+        }
+        // plane_sizes の合計が u32 に収まることを検証する
+        // (C 側へ n_filled_len として渡すため)
+        let (y, u, v) =
+            Self::plane_sizes(config.width, config.height, config.color_format).ok_or(Error {
+                function: "EncoderConfig: plane size overflow",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            })?;
+        if y.checked_add(u)
+            .and_then(|s| s.checked_add(v))
+            .is_none_or(|total| total > u32::MAX as usize)
+        {
+            bad("EncoderConfig: total plane size must fit in u32")?;
+        }
         if config.fps_denominator == 0 {
             bad("EncoderConfig: fps_denominator must be > 0")?;
         }
@@ -725,6 +747,48 @@ impl Encoder {
             bad("EncoderConfig: target_bit_rate must be 0 for CRF mode")?;
         }
 
+        // FFI へ渡す際の縮小キャストで切り捨て・符号反転が起きないことを検証する
+        if let Some(v) = config.max_bit_rate
+            && v > u32::MAX as usize
+        {
+            bad("EncoderConfig: max_bit_rate must fit in u32")?;
+        }
+        if let Some(v) = config.starting_buffer_level_ms
+            && v > i64::MAX as u64
+        {
+            bad("EncoderConfig: starting_buffer_level_ms must fit in i64")?;
+        }
+        if let Some(v) = config.optimal_buffer_level_ms
+            && v > i64::MAX as u64
+        {
+            bad("EncoderConfig: optimal_buffer_level_ms must fit in i64")?;
+        }
+        if let Some(v) = config.maximum_buffer_size_ms
+            && v > i64::MAX as u64
+        {
+            bad("EncoderConfig: maximum_buffer_size_ms must fit in i64")?;
+        }
+        if let Some(v) = config.intra_period_length
+            && v.get() > i32::MAX as usize
+        {
+            bad("EncoderConfig: intra_period_length must fit in i32")?;
+        }
+        if let Some(v) = config.look_ahead_distance
+            && v > u32::MAX as usize
+        {
+            bad("EncoderConfig: look_ahead_distance must fit in u32")?;
+        }
+        if let Some(v) = config.tile_columns
+            && v.get() > i32::MAX as usize
+        {
+            bad("EncoderConfig: tile_columns must fit in i32")?;
+        }
+        if let Some(v) = config.tile_rows
+            && v.get() > i32::MAX as usize
+        {
+            bad("EncoderConfig: tile_rows must fit in i32")?;
+        }
+
         Ok(())
     }
 
@@ -750,6 +814,14 @@ impl Encoder {
 
             let code = sys::svt_av1_enc_init_handle(&mut handle, svt_config.as_mut_ptr());
             Error::check(code, "svt_av1_enc_init_handle")?;
+
+            // FFI 境界の防御: 成功コードでも null が返った場合に備える
+            if handle.is_null() {
+                return Err(Error {
+                    function: "svt_av1_enc_init_handle (null handle)",
+                    code: sys::EbErrorType_EB_ErrorBadParameter,
+                });
+            }
 
             let mut handle = EncoderHandle {
                 inner: handle,
@@ -1210,8 +1282,9 @@ impl Encoder {
             buffer_header.pic_type = sys::EbAv1PictureType_EB_AV1_INVALID_PICTURE;
             buffer_header.metadata = std::ptr::null_mut();
 
+            // validate_config で検証済みなので unwrap は安全
             let (y_size, u_size, v_size) =
-                Self::plane_sizes(config.width, config.height, config.color_format);
+                Self::plane_sizes(config.width, config.height, config.color_format).unwrap();
             let mut input_yuv = vec![0; y_size + u_size + v_size];
 
             buffer.luma = input_yuv.as_mut_ptr();
@@ -1222,6 +1295,23 @@ impl Encoder {
             let mut stream_header = std::ptr::null_mut();
             let code = sys::svt_av1_enc_stream_header(handle.inner, &mut stream_header);
             Error::check(code, "svt_av1_enc_stream_header")?;
+
+            // FFI 境界の防御: 成功コードでも null が返った場合に備える
+            if stream_header.is_null() {
+                return Err(Error {
+                    function: "svt_av1_enc_stream_header (null pointer)",
+                    code: sys::EbErrorType_EB_ErrorBadParameter,
+                });
+            }
+
+            // p_buffer が null の場合も未定義動作になるため検証する
+            if (*stream_header).p_buffer.is_null() {
+                sys::svt_av1_enc_stream_header_release(stream_header);
+                return Err(Error {
+                    function: "svt_av1_enc_stream_header (null p_buffer)",
+                    code: sys::EbErrorType_EB_ErrorBadParameter,
+                });
+            }
 
             let extra_data = std::slice::from_raw_parts(
                 (*stream_header).p_buffer,
@@ -1260,6 +1350,14 @@ impl Encoder {
     ///
     /// また B フレームは扱わない前提（つまり入力フレームと出力フレームの順番が一致する）
     pub fn encode(&mut self, frame: &FrameData<'_>, options: &EncodeOptions) -> Result<(), Error> {
+        // EOS 送信済みの場合は追加フレームを受け付けない
+        if self.eos {
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::encode (already finished)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
+        }
+
         // ColorFormat と FrameData の variant が一致していることを検証する
         let format_matches = matches!(
             (&self.color_format, frame),
@@ -1277,7 +1375,11 @@ impl Encoder {
             FrameData::I420 { y, u, v } | FrameData::I42010 { y, u, v } => (*y, *u, *v),
         };
 
-        if self.input_yuv.len() != y.len() + u.len() + v.len() {
+        let total_len = y
+            .len()
+            .checked_add(u.len())
+            .and_then(|s| s.checked_add(v.len()));
+        if total_len != Some(self.input_yuv.len()) {
             Error::check(
                 sys::EbErrorType_EB_ErrorBadParameter,
                 "shiguredo_svt_av1::Encoder::encode",
@@ -1315,6 +1417,14 @@ impl Encoder {
     ///
     /// 残りのエンコード結果は [`Encoder::next_frame()`] で取得できる
     pub fn finish(&mut self) -> Result<(), Error> {
+        // 多重呼び出しを防止する
+        if self.eos {
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::finish (already finished)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
+        }
+
         // EOS 送信時はデータサイズを 0 にする必要がある
         // n_filled_len が非ゼロのままだと SVT-AV1 が追加フレームとして解釈し、
         // CBR モードでハングする場合がある
@@ -1353,6 +1463,12 @@ impl Encoder {
             return None;
         }
 
+        // FFI 境界の防御: 成功コードでも null が返った場合に備える
+        if output.is_null() {
+            log::error!("svt_av1_enc_get_packet() returned success but output is null");
+            return None;
+        }
+
         let frame = unsafe { EncodedFrame(&mut *output) };
         if (frame.0.flags & sys::EB_BUFFERFLAG_EOS) != 0 {
             None
@@ -1362,19 +1478,23 @@ impl Encoder {
         }
     }
 
+    /// プレーンサイズを計算する。overflow 時は None を返す。
     fn plane_sizes(
         width: usize,
         height: usize,
         color_format: ColorFormat,
-    ) -> (usize, usize, usize) {
+    ) -> Option<(usize, usize, usize)> {
         let bytes_per_pixel = match color_format {
             ColorFormat::I420 => 1,
             ColorFormat::I42010 => 2,
         };
-        let y_size = width * height * bytes_per_pixel;
-        let u_size = width.div_ceil(2) * height.div_ceil(2) * bytes_per_pixel;
+        let y_size = width.checked_mul(height)?.checked_mul(bytes_per_pixel)?;
+        let u_size = width
+            .div_ceil(2)
+            .checked_mul(height.div_ceil(2))?
+            .checked_mul(bytes_per_pixel)?;
         let v_size = u_size;
-        (y_size, u_size, v_size)
+        Some((y_size, u_size, v_size))
     }
 }
 
@@ -1407,6 +1527,9 @@ pub struct EncodedFrame<'a>(&'a mut sys::EbBufferHeaderType);
 impl EncodedFrame<'_> {
     /// 圧縮データ
     pub fn data(&self) -> &[u8] {
+        if self.0.p_buffer.is_null() || self.0.n_filled_len == 0 {
+            return &[];
+        }
         unsafe { std::slice::from_raw_parts(self.0.p_buffer, self.0.n_filled_len as usize) }
     }
 
