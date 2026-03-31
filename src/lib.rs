@@ -686,8 +686,15 @@ impl Encoder {
         }
         // plane_sizes の合計が u32 に収まることを検証する
         // (C 側へ n_filled_len として渡すため)
-        let (y, u, v) = Self::plane_sizes(config.width, config.height, config.color_format);
-        if y.saturating_add(u).saturating_add(v) > u32::MAX as usize {
+        let (y, u, v) =
+            Self::plane_sizes(config.width, config.height, config.color_format).ok_or(Error {
+                function: "EncoderConfig: plane size overflow",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            })?;
+        if y.checked_add(u)
+            .and_then(|s| s.checked_add(v))
+            .is_none_or(|total| total > u32::MAX as usize)
+        {
             bad("EncoderConfig: total plane size must fit in u32")?;
         }
         if config.fps_denominator == 0 {
@@ -1225,8 +1232,9 @@ impl Encoder {
             buffer_header.pic_type = sys::EbAv1PictureType_EB_AV1_INVALID_PICTURE;
             buffer_header.metadata = std::ptr::null_mut();
 
+            // validate_config で検証済みなので unwrap は安全
             let (y_size, u_size, v_size) =
-                Self::plane_sizes(config.width, config.height, config.color_format);
+                Self::plane_sizes(config.width, config.height, config.color_format).unwrap();
             let mut input_yuv = vec![0; y_size + u_size + v_size];
 
             buffer.luma = input_yuv.as_mut_ptr();
@@ -1416,19 +1424,23 @@ impl Encoder {
         }
     }
 
+    /// プレーンサイズを計算する。overflow 時は None を返す。
     fn plane_sizes(
         width: usize,
         height: usize,
         color_format: ColorFormat,
-    ) -> (usize, usize, usize) {
+    ) -> Option<(usize, usize, usize)> {
         let bytes_per_pixel = match color_format {
             ColorFormat::I420 => 1,
             ColorFormat::I42010 => 2,
         };
-        let y_size = width * height * bytes_per_pixel;
-        let u_size = width.div_ceil(2) * height.div_ceil(2) * bytes_per_pixel;
+        let y_size = width.checked_mul(height)?.checked_mul(bytes_per_pixel)?;
+        let u_size = width
+            .div_ceil(2)
+            .checked_mul(height.div_ceil(2))?
+            .checked_mul(bytes_per_pixel)?;
         let v_size = u_size;
-        (y_size, u_size, v_size)
+        Some((y_size, u_size, v_size))
     }
 }
 
