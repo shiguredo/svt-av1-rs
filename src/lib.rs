@@ -675,6 +675,15 @@ impl Encoder {
         if config.width == 0 || config.height == 0 {
             bad("EncoderConfig: width/height must be > 0")?;
         }
+        if config.width > u32::MAX as usize || config.height > u32::MAX as usize {
+            bad("EncoderConfig: width/height must fit in u32")?;
+        }
+        if config.fps_numerator > u32::MAX as usize
+            || config.fps_denominator > u32::MAX as usize
+            || config.target_bit_rate > u32::MAX as usize
+        {
+            bad("EncoderConfig: fps_numerator/fps_denominator/target_bit_rate must fit in u32")?;
+        }
         if config.fps_denominator == 0 {
             bad("EncoderConfig: fps_denominator must be > 0")?;
         }
@@ -1223,6 +1232,14 @@ impl Encoder {
             let code = sys::svt_av1_enc_stream_header(handle.inner, &mut stream_header);
             Error::check(code, "svt_av1_enc_stream_header")?;
 
+            // FFI 境界の防御: 成功コードでも null が返った場合に備える
+            if stream_header.is_null() {
+                return Err(Error {
+                    function: "svt_av1_enc_stream_header (null pointer)",
+                    code: sys::EbErrorType_EB_ErrorBadParameter,
+                });
+            }
+
             let extra_data = std::slice::from_raw_parts(
                 (*stream_header).p_buffer,
                 (*stream_header).n_filled_len as usize,
@@ -1350,6 +1367,12 @@ impl Encoder {
         }
         if code != sys::EbErrorType_EB_ErrorNone {
             log::error!("svt_av1_enc_get_packet() failed: code={code}");
+            return None;
+        }
+
+        // FFI 境界の防御: 成功コードでも null が返った場合に備える
+        if output.is_null() {
+            log::error!("svt_av1_enc_get_packet() returned success but output is null");
             return None;
         }
 
