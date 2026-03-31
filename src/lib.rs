@@ -1292,6 +1292,14 @@ impl Encoder {
     ///
     /// また B フレームは扱わない前提（つまり入力フレームと出力フレームの順番が一致する）
     pub fn encode(&mut self, frame: &FrameData<'_>, options: &EncodeOptions) -> Result<(), Error> {
+        // EOS 送信済みの場合は追加フレームを受け付けない
+        if self.eos {
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::encode (already finished)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
+        }
+
         // ColorFormat と FrameData の variant が一致していることを検証する
         let format_matches = matches!(
             (&self.color_format, frame),
@@ -1347,6 +1355,14 @@ impl Encoder {
     ///
     /// 残りのエンコード結果は [`Encoder::next_frame()`] で取得できる
     pub fn finish(&mut self) -> Result<(), Error> {
+        // 多重呼び出しを防止する
+        if self.eos {
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::finish (already finished)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
+        }
+
         // EOS 送信時はデータサイズを 0 にする必要がある
         // n_filled_len が非ゼロのままだと SVT-AV1 が追加フレームとして解釈し、
         // CBR モードでハングする場合がある
