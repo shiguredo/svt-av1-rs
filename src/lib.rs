@@ -684,6 +684,12 @@ impl Encoder {
         {
             bad("EncoderConfig: fps_numerator/fps_denominator/target_bit_rate must fit in u32")?;
         }
+        // plane_sizes の合計が u32 に収まることを検証する
+        // (C 側へ n_filled_len として渡すため)
+        let (y, u, v) = Self::plane_sizes(config.width, config.height, config.color_format);
+        if y.saturating_add(u).saturating_add(v) > u32::MAX as usize {
+            bad("EncoderConfig: total plane size must fit in u32")?;
+        }
         if config.fps_denominator == 0 {
             bad("EncoderConfig: fps_denominator must be > 0")?;
         }
@@ -1240,6 +1246,15 @@ impl Encoder {
                 });
             }
 
+            // p_buffer が null の場合も未定義動作になるため検証する
+            if (*stream_header).p_buffer.is_null() {
+                sys::svt_av1_enc_stream_header_release(stream_header);
+                return Err(Error {
+                    function: "svt_av1_enc_stream_header (null p_buffer)",
+                    code: sys::EbErrorType_EB_ErrorBadParameter,
+                });
+            }
+
             let extra_data = std::slice::from_raw_parts(
                 (*stream_header).p_buffer,
                 (*stream_header).n_filled_len as usize,
@@ -1430,6 +1445,9 @@ pub struct EncodedFrame<'a>(&'a mut sys::EbBufferHeaderType);
 impl EncodedFrame<'_> {
     /// 圧縮データ
     pub fn data(&self) -> &[u8] {
+        if self.0.p_buffer.is_null() || self.0.n_filled_len == 0 {
+            return &[];
+        }
         unsafe { std::slice::from_raw_parts(self.0.p_buffer, self.0.n_filled_len as usize) }
     }
 
