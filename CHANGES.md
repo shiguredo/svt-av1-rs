@@ -15,6 +15,8 @@
 
 - [UPDATE] Cargo.toml のフィールド順とセクション順を整理する
   - @voluntas
+- [UPDATE] `shiguredo_aom` を 2026.1.0 に更新する
+  - @voluntas
 
 ## 2026.1.0
 

@@ -117,8 +117,8 @@ fn psnr_y(original: &[u8], decoded: &[u8], width: usize, height: usize) -> f64 {
 fn extract_y_plane(frame: &shiguredo_aom::DecodedFrame<'_>) -> Vec<u8> {
     let width = frame.width();
     let height = frame.height();
-    let stride = frame.y_stride();
-    let y_data = frame.y_plane();
+    let stride = frame.y_stride().expect("failed to get y_stride");
+    let y_data = frame.y_plane().expect("failed to get y_plane");
     let mut y = Vec::with_capacity(width * height);
     for row in 0..height {
         y.extend_from_slice(&y_data[row * stride..row * stride + width]);
