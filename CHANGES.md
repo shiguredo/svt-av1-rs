@@ -11,6 +11,9 @@
 
 ## develop
 
+- [CHANGE] MSRV (rust-version) を 1.93 に上げる
+  - @voluntas
+
 ### misc
 
 - [UPDATE] Cargo.toml のフィールド順とセクション順を整理する

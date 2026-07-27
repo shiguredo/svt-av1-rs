@@ -2,7 +2,7 @@
 name = "shiguredo_svt_av1"
 version = "2026.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.93"
 description = "Rust bindings for SVT-AV1"
 readme = "README.md"
 homepage = "https://github.com/shiguredo/svt-av1-rs"
