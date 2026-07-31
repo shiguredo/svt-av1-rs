@@ -13,6 +13,8 @@
 
 - [CHANGE] MSRV (rust-version) を 1.93 に上げる
   - @voluntas
+- [ADD] Ubuntu 26.04 x86_64 / arm64 向けの prebuilt バイナリを追加する
+  - @voluntas
 
 ### misc
 
