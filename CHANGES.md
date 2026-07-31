@@ -15,6 +15,8 @@
   - @voluntas
 - [ADD] Ubuntu 26.04 x86_64 / arm64 向けの prebuilt バイナリを追加する
   - @voluntas
+- [UPDATE] SVT-AV1 を v4.1.0 から v4.2.0 に更新する
+  - @voluntas
 
 ### misc
 
