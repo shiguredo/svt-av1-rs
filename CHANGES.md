@@ -21,6 +21,8 @@
   - @voluntas
 - [FIX] `Encoder::encode()` がプレーンサイズの不正を検出しない問題を修正する
   - @voluntas
+- [FIX] `DOCS_RS=1` を設定した状態でビルドした後に通常ビルドが失敗する問題を修正する
+  - @voluntas
 
 ### misc
 
