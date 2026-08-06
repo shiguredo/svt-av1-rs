@@ -1,7 +1,7 @@
 # Encoder::encode() がプレーン長の不正を検出しない
 
 - Created: 2026-08-02
-- Completed: (未完了)
+- Completed: 2026-08-06
 - Branch: feature/fix-validate-plane-sizes-in-encode
 - Polished: 2026-08-06
 - Reporter: @voluntas
@@ -31,7 +31,13 @@
 
 ## 解決方法
 
-- `src/lib.rs` の `Encoder` 構造体に `height` フィールドを追加し、`Encoder::encode()` 内で `Self::plane_sizes()` を再計算して各プレーンの長さと個別に比較する (現在の `Encoder` はプレーンサイズの計算に必要な寸法として `width` と `color_format` のみを保持している)。既存の合計長チェックはこの個別プレーン長チェックで置き換える (個別一致なら合計も必ず一致するため、合計長チェックは冗長になる)
-- 長さエラーはどのプレーン (Y / U / V) が不正かを特定できる function 名にする。既存の「`shiguredo_svt_av1::Encoder::encode (color format mismatch)`」と同じ形式に合わせる
-- `FrameData` の doc と `Encoder::encode()` の doc に「各プレーンの長さは `EncoderConfig` の width / height / color_format から計算されるプレーンサイズと一致させること」を明記する。既存の「Y プレーンのストライドは入力フレームの幅と等しい」前提は維持する。なお `Encoder::encode()` の doc 更新は 0008 の doc 更新と重なるため、実装時に調整する
-- プレーン長不一致のテストを追加する (既存の `color_format_mismatch` はフォーマット不一致で先に弾かれるため、このパスは現在テストされていない)。テストは `src/lib.rs` 内の `#[cfg(test)]` モジュール (既存の encode 系テストと同じ場所) に配置し、I420 に加えて I42010 でも不正なプレーン長が `Err` になることを確認する
+- `src/lib.rs` の `Encoder` 構造体に `height` フィールドを追加した
+- `Encoder::encode()` 内で `Self::plane_sizes()` を再計算し、各プレーンの長さ (Y / U / V) を個別に比較するようにした。既存の合計長チェックはこの個別プレーン長チェックで置き換えた (個別一致なら合計も必ず一致するため)
+- 長さエラーは不正なプレーンを特定できる function 名 (`shiguredo_svt_av1::Encoder::encode (Y / U / V plane size mismatch)`) にし、既存の「`shiguredo_svt_av1::Encoder::encode (color format mismatch)`」と同じ形式に合わせた
+- `plane_sizes()` が `None` を返す場合 (通常は `validate_config` が弾くため発生しない想定) は防御としてエラーにした
+- `FrameData` の doc と `Encoder::encode()` の doc に「各プレーンの長さは `EncoderConfig` の width / height / color_format から計算されるプレーンサイズと一致させること」を明記した (バイト単位・`ceil` 表記つき)
+- テスト: `src/lib.rs` 内の `#[cfg(test)]` モジュールにプレーンサイズ不一致のテストを追加した
+  - `plane_size_mismatch_y` / `_u` / `_v` (I420、合計長一致の再現ケース含む)
+  - `plane_size_mismatch_10bit_y` / `_u` / `_v` (I42010)
+  - `encode_after_plane_size_mismatch` (エラー後も正常フレームでエンコード継続できること)
+  - `plane_sizes_odd_dimensions` (奇数寸法の `ceil` 計算の契約)
