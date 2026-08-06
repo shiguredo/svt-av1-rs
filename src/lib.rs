@@ -1576,11 +1576,18 @@ impl EncodedFrame<'_> {
     }
 
     /// キーフレームかどうか
+    ///
+    /// SVT-AV1 のピクチャタイプ意味論においてキーフレームに相当するかどうかで判定する。
+    /// 判定対象はキーフレーム (`EB_AV1_KEY_PICTURE`)、イントラオンリー
+    /// (`EB_AV1_INTRA_ONLY_PICTURE`)、Forward Key (`EB_AV1_FW_KEY_PICTURE`) の 3 つ。
+    /// SVT-AV1 v4.2.0 では Forward Key はエンコード出力に現れないが、将来
+    /// 出力されるようになった場合に備えて判定対象に含めている
     pub fn is_keyframe(&self) -> bool {
         matches!(
             self.0.pic_type,
             sys::EbAv1PictureType_EB_AV1_KEY_PICTURE
                 | sys::EbAv1PictureType_EB_AV1_INTRA_ONLY_PICTURE
+                | sys::EbAv1PictureType_EB_AV1_FW_KEY_PICTURE
         )
     }
 
@@ -1955,6 +1962,110 @@ mod tests {
             encoded_count += 1;
         }
         assert_eq!(encoded_count, 2);
+    }
+
+    #[test]
+    fn is_keyframe_fwdkf_refresh() {
+        // FwdkfRefresh 構成では keyint (intra_period_length + 1) の周期で
+        // キーフレーム (CRA) が出力され、そのすべてで is_keyframe() が true を返す
+        let mut config = EncoderConfig::new(320, 240, ColorFormat::I420);
+        config.rate_control_mode = RcMode::CqpOrCrf;
+        config.target_bit_rate = 0;
+        config.qp = Some(35);
+        config.enc_mode = 13;
+        config.fps_numerator = 30;
+        config.fps_denominator = 1;
+        // 意図しないシーンチェンジ検出による追加キーフレームを避ける
+        config.scene_change_detection = false;
+        config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
+        // FwdkfRefresh では hierarchical_levels が 4 に強制されるため mini-gop サイズは 16。
+        // keyint が mini-gop サイズの倍数になるよう 31 を選ぶ (keyint = 32)
+        config.intra_period_length = NonZeroUsize::new(31);
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+
+        // keyint (32) の 2 倍のフレームをエンコードする
+        // (フレーム数が不足すると周期キーフレームが出力されず、テストが黙ってパスする)
+        for _ in 0..64 {
+            encoder
+                .encode(&frame, &options)
+                .expect("フレームのエンコードに失敗");
+        }
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        let mut keyframes = Vec::new();
+        let mut inter_count = 0;
+        while let Some(frame) = encoder.next_frame() {
+            if frame.is_keyframe() {
+                keyframes.push((frame.pts(), frame.pic_type()));
+                // キーフレームはピクチャタイプ意味論上 Key / IntraOnly / ForwardKey の
+                // いずれかとして出力される (v4.2.0 では Forward Key は出力されないが、
+                // 将来出力されるようになった場合も is_keyframe() と整合するよう含めている)
+                assert!(matches!(
+                    frame.pic_type(),
+                    PictureType::Key | PictureType::IntraOnly | PictureType::ForwardKey
+                ));
+            } else {
+                inter_count += 1;
+            }
+        }
+
+        // 先頭 (pts=0) と keyint 周期 (pts=32) にキーフレームが出力される
+        // 周期キーフレーム (CRA) は v4.2.0 では IntraOnly として出力され、
+        // FwdkfRefresh が実際に適用されていることを確認する
+        // (SVT-AV1 が Forward Key を出力するようになった場合はこの断言を更新する)
+        assert_eq!(
+            keyframes,
+            vec![(0, PictureType::Key), (32, PictureType::IntraOnly)]
+        );
+        // インターフレームが出力され、is_keyframe() が false を返すことを確認する
+        assert!(inter_count > 0);
+    }
+
+    #[test]
+    fn is_keyframe_key_picture() {
+        // 閉じた GOP 構成の先頭フレームは KEY_PICTURE として出力され、
+        // is_keyframe() が true を返す (KEY_PICTURE 分岐の検証)
+        let config = encoder_config();
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; 320 * 320];
+        let u = vec![0u8; 160 * 160];
+        let v = vec![0u8; 160 * 160];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+        encoder
+            .encode(&frame, &options)
+            .expect("フレームのエンコードに失敗");
+        encoder
+            .encode(&frame, &options)
+            .expect("フレームのエンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        // 先頭フレームは KEY として出力され、is_keyframe() が true を返す
+        {
+            let first = encoder.next_frame().expect("先頭フレームが出力されない");
+            assert_eq!(first.pic_type(), PictureType::Key);
+            assert!(first.is_keyframe());
+        }
+
+        // 後続のフレームでは is_keyframe() が false を返す
+        while let Some(frame) = encoder.next_frame() {
+            assert!(!frame.is_keyframe());
+        }
     }
 
     #[test]
