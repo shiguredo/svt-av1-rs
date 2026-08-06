@@ -58,6 +58,12 @@ pub enum ColorFormat {
 }
 
 /// 入力フレームデータ
+///
+/// 各プレーンの長さ (バイト数) は、`EncoderConfig` の width / height / color_format から
+/// 計算されるプレーンサイズと一致させること
+/// (Y は width x height バイト、U / V は ceil(width/2) x ceil(height/2) バイト。
+/// I42010 では各ピクセル 2 バイトのため 2 倍する)。
+/// 長さが一致しない場合、[`Encoder::encode()`] はエラーを返す
 #[derive(Debug)]
 pub enum FrameData<'a> {
     /// I420 (3 プレーン: Y, U, V)
@@ -659,6 +665,7 @@ pub struct Encoder {
     frame_count: u64,
     received_count: u64,
     width: usize,
+    height: usize,
     color_format: ColorFormat,
     eos: bool,
 }
@@ -1331,6 +1338,7 @@ impl Encoder {
                 frame_count: 0,
                 received_count: 0,
                 width: config.width,
+                height: config.height,
                 color_format: config.color_format,
                 eos: false,
             })
@@ -1345,6 +1353,9 @@ impl Encoder {
     /// 画像データをエンコードする
     ///
     /// エンコード結果は [`Encoder::next_frame()`] で取得できる
+    ///
+    /// 各プレーンの長さは、[`FrameData`] の doc に示すプレーンサイズと一致させること。
+    /// 一致しない場合はエラーを返す
     ///
     /// なお Y プレーンのストライドは入力フレームの幅と等しいことが前提
     ///
@@ -1375,16 +1386,47 @@ impl Encoder {
             FrameData::I420 { y, u, v } | FrameData::I42010 { y, u, v } => (*y, *u, *v),
         };
 
-        let total_len = y
-            .len()
-            .checked_add(u.len())
-            .and_then(|s| s.checked_add(v.len()));
-        if total_len != Some(self.input_yuv.len()) {
-            Error::check(
-                sys::EbErrorType_EB_ErrorBadParameter,
-                "shiguredo_svt_av1::Encoder::encode",
-            )?;
-        }
+        // 各プレーンの長さが、EncoderConfig の width / height / color_format から
+        // 計算されるプレーンサイズと一致していることを検証する。
+        // 合計長だけの検証ではプレーン境界のずれを検出できないため、個別に比較する。
+        // validate_config で width / height / color_format の検証を済ませているため
+        // ここで None が返ることはない想定だが、防御としてエラーにする
+        // (with_log_level 側では検証済みのため unwrap しているが、ここでは防御を優先する)
+        let Some((y_size, u_size, v_size)) =
+            Self::plane_sizes(self.width, self.height, self.color_format)
+        else {
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::encode (plane size overflow)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
+        };
+        let check_plane_size =
+            |len: usize, expected: usize, function: &'static str| -> Result<(), Error> {
+                if len == expected {
+                    Ok(())
+                } else {
+                    Err(Error {
+                        function,
+                        code: sys::EbErrorType_EB_ErrorBadParameter,
+                    })
+                }
+            };
+        // 不正なプレーン (Y / U / V) をエラー表示で特定できるようにする
+        check_plane_size(
+            y.len(),
+            y_size,
+            "shiguredo_svt_av1::Encoder::encode (Y plane size mismatch)",
+        )?;
+        check_plane_size(
+            u.len(),
+            u_size,
+            "shiguredo_svt_av1::Encoder::encode (U plane size mismatch)",
+        )?;
+        check_plane_size(
+            v.len(),
+            v_size,
+            "shiguredo_svt_av1::Encoder::encode (V plane size mismatch)",
+        )?;
 
         self.input_yuv[..y.len()].copy_from_slice(y);
         self.input_yuv[y.len()..][..u.len()].copy_from_slice(u);
@@ -1793,6 +1835,129 @@ mod tests {
     }
 
     #[test]
+    fn plane_size_mismatch_y() {
+        // 合計長は一致するが Y プレーンの長さだけが不正なフレームを渡すとエラーになる
+        // (320x240 I420: y=76800, u=v=19200 に対して y を 4 バイト短く、u/v を 2 バイトずつ長くする)
+        assert_plane_size_mismatch(
+            ColorFormat::I420,
+            320 * 240 - 4,
+            160 * 120 + 2,
+            160 * 120 + 2,
+            "Y plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_u() {
+        // 合計長は一致するが U プレーンの長さだけが不正なフレームを渡すとエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I420,
+            320 * 240,
+            160 * 120 + 2,
+            160 * 120 - 2,
+            "U plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_v() {
+        // V プレーンの長さだけが不正なフレームを渡すとエラーになる
+        // (V のみをずらすと合計長も一致しないが、Y / U が正しければ V の検証に到達する)
+        assert_plane_size_mismatch(
+            ColorFormat::I420,
+            320 * 240,
+            160 * 120,
+            160 * 120 - 4,
+            "V plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_10bit_y() {
+        // I42010 でも合計長は一致するが Y プレーンの長さだけが不正なフレームはエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I42010,
+            320 * 240 * 2 - 4,
+            160 * 120 * 2 + 2,
+            160 * 120 * 2 + 2,
+            "Y plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_10bit_u() {
+        // I42010 でも合計長は一致するが U プレーンの長さだけが不正なフレームはエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I42010,
+            320 * 240 * 2,
+            160 * 120 * 2 + 2,
+            160 * 120 * 2 - 2,
+            "U plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_10bit_v() {
+        // I42010 でも V プレーンの長さだけが不正なフレームはエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I42010,
+            320 * 240 * 2,
+            160 * 120 * 2,
+            160 * 120 * 2 - 4,
+            "V plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn encode_after_plane_size_mismatch() {
+        // プレーン長の不正でエラーになった後でも、正常なフレームでエンコードを継続できる
+        let mut encoder = Encoder::new(EncoderConfig::new(320, 240, ColorFormat::I420))
+            .expect("エンコーダーの生成に失敗");
+
+        // 不正なプレーン長のフレームを渡すとエラーになる
+        let bad_y = vec![0u8; 320 * 240 - 4];
+        let bad_u = vec![0u8; 160 * 120 + 2];
+        let bad_v = vec![0u8; 160 * 120 + 2];
+        let bad_frame = FrameData::I420 {
+            y: &bad_y,
+            u: &bad_u,
+            v: &bad_v,
+        };
+        assert!(
+            encoder
+                .encode(&bad_frame, &EncodeOptions::default())
+                .is_err()
+        );
+
+        // その後、正常なフレームはエンコードできる
+        // (一フレームだけ処理すると SVT-AV1 が `--avif 1` を使うようにエラーログを出すので
+        // 二フレーム目も与えている)
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+        encoder
+            .encode(&frame, &options)
+            .expect("正常なフレームのエンコードに失敗");
+        encoder
+            .encode(&frame, &options)
+            .expect("正常なフレームのエンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        // 不正フレームでは frame_count が進まないため、正常フレーム 2 枚がそのまま出力される
+        let mut encoded_count = 0;
+        while encoder.next_frame().is_some() {
+            encoded_count += 1;
+        }
+        assert_eq!(encoded_count, 2);
+    }
+
+    #[test]
     fn encoded_frame_has_data() {
         let config = encoder_config();
         let mut encoder = Encoder::new(config).expect("failed to create");
@@ -1819,11 +1984,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn plane_sizes_odd_dimensions() {
+        // 奇数寸法では U / V プレーンの寸法が ceil(width/2) x ceil(height/2) になる
+        // (FrameData の doc に明記した契約。321.div_ceil(2) = 161、241.div_ceil(2) = 121)
+        assert_eq!(
+            Encoder::plane_sizes(321, 241, ColorFormat::I420),
+            Some((321 * 241, 161 * 121, 161 * 121))
+        );
+        assert_eq!(
+            Encoder::plane_sizes(321, 241, ColorFormat::I42010),
+            Some((321 * 241 * 2, 161 * 121 * 2, 161 * 121 * 2))
+        );
+    }
+
     fn encoder_config() -> EncoderConfig {
         let mut config = EncoderConfig::new(320, 320, ColorFormat::I420);
         config.target_bit_rate = 1_000_000;
         config.fps_numerator = 1;
         config.fps_denominator = 1;
         config
+    }
+
+    // 不正なプレーン長のフレームを渡すとエラーになり、エラー表示に不正なプレーン名が
+    // 含まれることを確認する
+    fn assert_plane_size_mismatch(
+        color_format: ColorFormat,
+        y_len: usize,
+        u_len: usize,
+        v_len: usize,
+        expected_message: &str,
+    ) {
+        let mut encoder = Encoder::new(EncoderConfig::new(320, 240, color_format))
+            .expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; y_len];
+        let u = vec![0u8; u_len];
+        let v = vec![0u8; v_len];
+        let frame = match color_format {
+            ColorFormat::I420 => FrameData::I420 {
+                y: &y,
+                u: &u,
+                v: &v,
+            },
+            ColorFormat::I42010 => FrameData::I42010 {
+                y: &y,
+                u: &u,
+                v: &v,
+            },
+        };
+
+        let err = encoder
+            .encode(&frame, &EncodeOptions::default())
+            .unwrap_err();
+        assert!(err.to_string().contains(expected_message));
     }
 }

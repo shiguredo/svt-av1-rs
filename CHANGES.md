@@ -17,6 +17,8 @@
   - @voluntas
 - [UPDATE] SVT-AV1 を v4.1.0 から v4.2.0 に更新する
   - @voluntas
+- [FIX] `Encoder::encode()` がプレーンサイズの不正を検出しない問題を修正する
+  - @voluntas
 
 ### misc
 
