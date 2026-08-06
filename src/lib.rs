@@ -1577,7 +1577,8 @@ impl EncodedFrame<'_> {
 
     /// キーフレームかどうか
     ///
-    /// SVT-AV1 のピクチャタイプ意味論においてキーフレームに相当するかどうかで判定する。
+    /// SVT-AV1 が出力するピクチャタイプ (`EbAv1PictureType`) のうち、
+    /// キーフレームに相当するものを判定対象とする。
     /// 判定対象はキーフレーム (`EB_AV1_KEY_PICTURE`)、イントラオンリー
     /// (`EB_AV1_INTRA_ONLY_PICTURE`)、 Forward Key (`EB_AV1_FW_KEY_PICTURE`) の 3 つ。
     /// SVT-AV1 v4.2.0 では Forward Key はエンコード出力に現れないが、将来
@@ -1973,6 +1974,7 @@ mod tests {
         config.target_bit_rate = 0;
         config.qp = Some(35);
         config.enc_mode = 13;
+        // fps は GOP 構造に影響するため明示する
         config.fps_numerator = 30;
         config.fps_denominator = 1;
         // 意図しないシーンチェンジ検出による追加キーフレームを避ける
@@ -1980,7 +1982,8 @@ mod tests {
         config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
         // FwdkfRefresh は hierarchical_levels が 4 に強制される (enc_handle.c の設定処理)。
         // したがって mini-gop サイズは 16 になり、keyint が mini-gop サイズの倍数になるよう
-        // 31 を選ぶ (keyint = 32)
+        // 31 を選ぶ (keyint = 32)。倍数にしておくと周期キーフレームの出力位置が
+        // mini-gop 境界に揃う
         config.intra_period_length = NonZeroUsize::new(31);
         let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
@@ -2027,16 +2030,36 @@ mod tests {
     }
 
     #[test]
+    fn is_keyframe_forward_key() {
+        // EB_AV1_FW_KEY_PICTURE が is_keyframe() で true と判定されることを確認する
+        // (v4.2.0 では Forward Key はエンコード出力に現れないため、ヘッダを直接構築して検証する)
+        let mut header = unsafe { std::mem::zeroed::<sys::EbBufferHeaderType>() };
+        header.pic_type = sys::EbAv1PictureType_EB_AV1_FW_KEY_PICTURE;
+        let frame = EncodedFrame(&mut header);
+        assert!(frame.is_keyframe());
+        assert_eq!(frame.pic_type(), PictureType::ForwardKey);
+        // Drop で svt_av1_enc_release_out_buffer が呼ばれるのを防ぐため forget する
+        // (is_keyframe() / pic_type() は pic_type フィールドしか読まないためゼロ初期化で安全)
+        std::mem::forget(frame);
+    }
+
+    #[test]
     fn is_keyframe_key_picture() {
-        // 閉じた GOP 構成 (KfRefresh 明示) の先頭フレームは KEY_PICTURE として出力され、
+        // 閉じた GOP 構成 (KfRefresh) の先頭フレームは KEY_PICTURE として出力され、
         // is_keyframe() が true を返す (KEY_PICTURE 分岐の検証)
-        let mut config = encoder_config();
+        let mut config = EncoderConfig::new(320, 240, ColorFormat::I420);
+        config.rate_control_mode = RcMode::CqpOrCrf;
+        config.target_bit_rate = 0;
+        config.qp = Some(35);
+        config.enc_mode = 13;
+        config.fps_numerator = 30;
+        config.fps_denominator = 1;
         config.intra_refresh_type = Some(IntraRefreshType::KfRefresh);
         let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
-        let y = vec![0u8; 320 * 320];
-        let u = vec![0u8; 160 * 160];
-        let v = vec![0u8; 160 * 160];
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
         let frame = FrameData::I420 {
             y: &y,
             u: &u,
