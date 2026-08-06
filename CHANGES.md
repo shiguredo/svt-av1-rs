@@ -32,6 +32,8 @@
   - @voluntas
 - [UPDATE] `shiguredo_dav1d` を 2026.2.0-canary.2 に更新する
   - @voluntas
+- [UPDATE] `EncoderConfig` の doc コメントを SVT-AV1 v4.2.0 の一次資料と一致するように修正する
+  - @voluntas
 
 ## 2026.1.0
 
