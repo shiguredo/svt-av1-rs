@@ -277,7 +277,7 @@ pub enum PictureType {
     Key,
     /// 非参照フレーム
     NonRef,
-    /// Forward キーフレーム
+    /// Forward Key
     ForwardKey,
     /// Show Existing フレーム
     ShowExisting,
@@ -1576,11 +1576,19 @@ impl EncodedFrame<'_> {
     }
 
     /// キーフレームかどうか
+    ///
+    /// SVT-AV1 が出力するピクチャタイプ (`EbAv1PictureType`) のうち、
+    /// キーフレームに相当するものを判定対象とする。
+    /// 判定対象はキーフレーム (`EB_AV1_KEY_PICTURE`)、イントラオンリー
+    /// (`EB_AV1_INTRA_ONLY_PICTURE`)、 Forward Key (`EB_AV1_FW_KEY_PICTURE`) の 3 つ。
+    /// SVT-AV1 v4.2.0 では Forward Key はエンコード出力に現れないが、将来
+    /// 出力されるようになった場合に備えて判定対象に含めている。
     pub fn is_keyframe(&self) -> bool {
         matches!(
             self.0.pic_type,
             sys::EbAv1PictureType_EB_AV1_KEY_PICTURE
                 | sys::EbAv1PictureType_EB_AV1_INTRA_ONLY_PICTURE
+                | sys::EbAv1PictureType_EB_AV1_FW_KEY_PICTURE
         )
     }
 
@@ -1955,6 +1963,133 @@ mod tests {
             encoded_count += 1;
         }
         assert_eq!(encoded_count, 2);
+    }
+
+    #[test]
+    fn is_keyframe_fwdkf_refresh() {
+        // FwdkfRefresh 構成では keyint (intra_period_length + 1) の周期で
+        // キーフレーム (CRA) が出力され、そのすべてで is_keyframe() が true を返す
+        let mut config = EncoderConfig::new(320, 240, ColorFormat::I420);
+        config.rate_control_mode = RcMode::CqpOrCrf;
+        config.target_bit_rate = 0;
+        config.qp = Some(35);
+        config.enc_mode = 13;
+        // fps は GOP 構造に影響するため明示する
+        config.fps_numerator = 30;
+        config.fps_denominator = 1;
+        // 意図しないシーンチェンジ検出による追加キーフレームを避ける
+        config.scene_change_detection = false;
+        config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
+        // FwdkfRefresh は hierarchical_levels が 4 に強制される (enc_handle.c の設定処理)。
+        // したがって mini-gop サイズは 16 になり、keyint が mini-gop サイズの倍数になるよう
+        // 31 を選ぶ (keyint = 32)。倍数にしておくと周期キーフレームの出力位置が
+        // mini-gop 境界に揃う
+        config.intra_period_length = NonZeroUsize::new(31);
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+
+        // keyint (32) の 2 倍のフレームをエンコードする
+        // (フレーム数が不足すると周期キーフレームが出力されず、テストが黙ってパスする)
+        for _ in 0..64 {
+            encoder
+                .encode(&frame, &options)
+                .expect("フレームのエンコードに失敗");
+        }
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        let mut keyframes = Vec::new();
+        let mut inter_count = 0;
+        while let Some(frame) = encoder.next_frame() {
+            if frame.is_keyframe() {
+                keyframes.push((frame.pts(), frame.pic_type()));
+            } else {
+                inter_count += 1;
+            }
+        }
+
+        // 先頭 (pts=0) と keyint 周期 (pts=32) にキーフレームが出力される。
+        // キーフレームのピクチャタイプは v4.2.0 では Key / IntraOnly として出力される
+        // (Forward Key は出力されない。将来出力されるようになった場合はこの断言を更新する)。
+        // 周期キーフレーム (CRA) が IntraOnly であることは、FwdkfRefresh が実際に
+        // 適用されていることの確認になる
+        assert_eq!(
+            keyframes,
+            vec![(0, PictureType::Key), (32, PictureType::IntraOnly)]
+        );
+        // インターフレームが出力され、is_keyframe() が false を返すことを確認する
+        assert!(inter_count > 0);
+    }
+
+    #[test]
+    fn is_keyframe_forward_key() {
+        // EB_AV1_FW_KEY_PICTURE が is_keyframe() で true と判定されることを確認する
+        // (v4.2.0 では Forward Key はエンコード出力に現れないため、ヘッダを直接構築して検証する)
+        let mut header = unsafe { std::mem::zeroed::<sys::EbBufferHeaderType>() };
+        header.pic_type = sys::EbAv1PictureType_EB_AV1_FW_KEY_PICTURE;
+        let frame = EncodedFrame(&mut header);
+        assert!(frame.is_keyframe());
+        assert_eq!(frame.pic_type(), PictureType::ForwardKey);
+        // Drop で svt_av1_enc_release_out_buffer が呼ばれるのを防ぐため forget する
+        // (is_keyframe() / pic_type() は pic_type フィールドしか読まないためゼロ初期化で安全)
+        std::mem::forget(frame);
+    }
+
+    #[test]
+    fn is_keyframe_key_picture() {
+        // 閉じた GOP 構成 (KfRefresh) の先頭フレームは KEY_PICTURE として出力され、
+        // is_keyframe() が true を返す (KEY_PICTURE 分岐の検証)
+        let mut config = EncoderConfig::new(320, 240, ColorFormat::I420);
+        config.rate_control_mode = RcMode::CqpOrCrf;
+        config.target_bit_rate = 0;
+        config.qp = Some(35);
+        config.enc_mode = 13;
+        config.fps_numerator = 30;
+        config.fps_denominator = 1;
+        config.intra_refresh_type = Some(IntraRefreshType::KfRefresh);
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+        encoder
+            .encode(&frame, &options)
+            .expect("フレームのエンコードに失敗");
+        encoder
+            .encode(&frame, &options)
+            .expect("フレームのエンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        // 先頭フレームは KEY として出力され、is_keyframe() が true を返す
+        {
+            let first = encoder.next_frame().expect("先頭フレームが出力されない");
+            assert_eq!(first.pic_type(), PictureType::Key);
+            assert!(first.is_keyframe());
+        }
+
+        // 後続のフレームでは is_keyframe() が false を返す
+        let mut inter_count = 0;
+        while let Some(frame) = encoder.next_frame() {
+            assert!(!frame.is_keyframe());
+            inter_count += 1;
+        }
+        // 後続のフレームが少なくとも 1 つ出力されることを確認する
+        // (出力が先頭フレームだけだとテストが黙ってパスするため)
+        assert!(inter_count > 0);
     }
 
     #[test]
