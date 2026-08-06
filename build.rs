@@ -11,9 +11,15 @@ const LINK_NAME: &str = "SvtAv1Enc";
 
 fn main() {
     // Cargo.toml か build.rs が更新されたら、依存ライブラリを再ビルドする
+    // ここで rerun-if-changed を宣言すると cargo は明示追跡モードになり、
+    // 宣言していないユーザー定義の環境変数の変化ではビルドスクリプトを再実行しなくなる
     println!("cargo::rerun-if-changed=Cargo.toml");
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_SOURCE_BUILD");
+    // DOCS_RS の切り替えでビルドスクリプトを再実行させる
+    // (これが無いと DOCS_RS=1 で書き込んだダミーバインディングが
+    // その後の通常ビルドで使われ続け、コンパイルエラーになる)
+    println!("cargo::rerun-if-env-changed=DOCS_RS");
 
     // 各種変数やビルドディレクトリのセットアップ
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("infallible"));
