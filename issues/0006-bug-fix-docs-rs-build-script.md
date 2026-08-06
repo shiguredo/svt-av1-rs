@@ -1,7 +1,7 @@
 # DOCS_RS=1 でのビルドスクリプト実行後に通常ビルドが失敗する
 
 - Created: 2026-08-02
-- Completed: (未完了)
+- Completed: 2026-08-06
 - Branch: feature/fix-docs-rs-build-script
 - Polished: 2026-08-06
 - Reporter: @voluntas
@@ -42,5 +42,8 @@ docs.rs 向けのダミーバインディング生成が通常ビルドを壊さ
 
 ## 解決方法
 
-- `build.rs` の既存の `cargo::rerun-if-env-changed=CARGO_FEATURE_SOURCE_BUILD` の直後に、`cargo::rerun-if-env-changed=DOCS_RS` を追加する
+- `build.rs` の既存の `cargo::rerun-if-env-changed=CARGO_FEATURE_SOURCE_BUILD` の直後に、`cargo::rerun-if-env-changed=DOCS_RS` を追加した
 - 修正後は `DOCS_RS` の切り替えでビルドスクリプトが再実行され、prebuilt の再ダウンロードが発生するが、これは正常動作であり問題ない
+- `build.rs` のコメントに、明示追跡モード (rerun-if-changed 宣言後は未宣言のユーザー定義環境変数が追跡されない) と、`DOCS_RS` の再実行が必要な理由を追記した
+- `README.md` の docs.rs 向けビルドセクションに、`DOCS_RS` の解除で通常ビルドに戻れること、解除後の最初のビルドで prebuilt の再ダウンロード (ネットワーク接続が必要) が発生すること、`DOCS_RS=1` のままコンパイルを伴うコマンドを実行しないこと、を追記した
+- 検証: 同一ターゲットディレクトリで `DOCS_RS=1 cargo doc --no-deps` の後に通常の `cargo build` が成功することを確認した (修正前は失敗)。`DOCS_RS=1 cargo build` が失敗する挙動 (コンパイル不能なダミーの維持) は設計どおりであることも確認した
