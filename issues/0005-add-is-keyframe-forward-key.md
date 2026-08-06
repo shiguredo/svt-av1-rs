@@ -1,7 +1,7 @@
 # EncodedFrame::is_keyframe() の判定対象に Forward Key を追加する
 
 - Created: 2026-08-02
-- Completed: (未完了)
+- Completed: 2026-08-06
 - Branch: feature/add-is-keyframe-forward-key
 - Polished: 2026-08-06
 - Reporter: @voluntas
@@ -31,14 +31,10 @@ SVT-AV1 v4.2.0 では、出力パケットの pic_type は `packetization_proces
 
 ## 解決方法
 
-- `src/lib.rs` の `EncodedFrame::is_keyframe()` の一致対象に `EB_AV1_FW_KEY_PICTURE` を追加する
-- `is_keyframe()` の doc に判定対象のピクチャタイプと契約 (ピクチャタイプ意味論に基づく) を明記する
-- FwdkfRefresh 構成でキーフレーム判定が機能することを検証する回帰テストを追加する (`src/lib.rs` 内の `#[cfg(test)]` モジュール、既存の encode 系テストと同じ場所)
-  - `EncoderConfig::intra_refresh_type` に `IntraRefreshType::FwdkfRefresh` を設定し、`intra_period_length` を明示する (デフォルトでは周期キーフレームが約 5 秒 GOP 相当と遠く、短いテストでは周期 CRA が発生しない)
-  - `intra_period_length` より多いフレーム数 (例: 2 倍) をエンコードし、先頭フレーム以外の周期キーフレームが少なくとも 1 つ出力されること (キーフレーム数 >= 2) を確認する (フレーム数が不足すると先頭フレームだけでテストが黙ってパスする)。キーフレームの出力位置 (フレームインデックス) が `intra_period_length + 1` (keyint) の周期と一致することも確認する。なお FwdkfRefresh では keyint が mini-gop サイズの倍数になるよう `intra_period_length` を選ぶこと (FwdkfRefresh は hierarchical_levels が 4 に強制されるため mini-gop サイズは 16。例: `intra_period_length` に 31 を選ぶと keyint は 32)
-  - レート制御モードは `RcMode::CqpOrCrf` を使う (`RcMode::Vbr` は SVT-AV1 がシングルパスで `intra_refresh_type` を `KF_REFRESH` に強制上書きするため (enc_handle.c。本クレートには pass 設定がなく常にシングルパス)、FwdkfRefresh の検証が黙って行われない)。CBR は src/lib.rs が pred_structure を低遅延に強制するため FwdkfRefresh と組み合わせられず、実際に試すとエラーとハングが発生する。`RcMode::CqpOrCrf` を使う場合は `target_bit_rate = 0` に設定すること (src/lib.rs の `validate_config` の制約)
-  - v4.2.0 では Forward Key が出力されないため、`EB_AV1_KEY_PICTURE` / `EB_AV1_INTRA_ONLY_PICTURE` が `is_keyframe() == true` を返すことを確認する (実測では CqpOrCrf で INTRA_ONLY_PICTURE が出力される。KEY_PICTURE の確認は既存テストスイートで担保する)。このテストは `EB_AV1_FW_KEY_PICTURE` の追加自体を直接検証できないが、v4.2.0 では出力されないため不可避であり、FwdkfRefresh 構成の既存挙動の回帰担保として位置づける
-  - インターフレームでは `is_keyframe() == false` になることも確認する
-- 既存テストスイート (encode_cbr / encode_crf 等) がパスすることと、既存の一致対象 (KEY / INTRA_ONLY) を保持することで完了条件の回帰を検証する
-- `CHANGES.md` の develop セクションに [ADD] として追記する
-- なお `Encoder::next_frame()` のシグネチャは 0008 で `Result<Option<EncodedFrame>, Error>` に変更される予定のため、テスト実装時に調整する
+- `src/lib.rs` の `EncodedFrame::is_keyframe()` の一致対象に `EB_AV1_FW_KEY_PICTURE` を追加した
+- `is_keyframe()` の doc に判定対象 (KEY / INTRA_ONLY / Forward Key) と、SVT-AV1 のピクチャタイプに基づく判定であることを明記した (v4.2.0 では Forward Key は出力されない旨も追記)
+- テストを `src/lib.rs` 内の `#[cfg(test)]` モジュールに追加した
+  - `is_keyframe_fwdkf_refresh`: FwdkfRefresh 構成 (CqpOrCrf、intra_period_length=31 → keyint=32) で 64 フレームをエンコードし、pts=0 / pts=32 にキーフレームが出力されて `is_keyframe() == true` になること、周期キーフレーム (CRA) が IntraOnly として出力されること、インターフレームで `is_keyframe() == false` になることを確認する
+  - `is_keyframe_key_picture`: 閉じた GOP 構成 (KfRefresh) の先頭フレームが KEY_PICTURE として出力され、`is_keyframe() == true` になることを確認する
+  - `is_keyframe_forward_key`: `EB_AV1_FW_KEY_PICTURE` を直接構築して `is_keyframe() == true` になることを確認する (v4.2.0 では出力されないため直接構築で検証)
+- `CHANGES.md` の develop セクションに [ADD] として追記した
