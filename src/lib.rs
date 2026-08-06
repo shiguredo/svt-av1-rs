@@ -333,10 +333,16 @@ pub struct EncoderConfig {
     /// キーフレーム間隔 (フレーム数)
     pub intra_period_length: Option<NonZeroUsize>,
 
-    /// タイル列数 (並列処理用)
+    /// タイル列数の log2 値 (0=分割なし, 1=2 分割)
+    ///
+    /// `None` は分割なし (SVT-AV1 の 0 相当)。列数の範囲は 0-4 で、
+    /// タイル総数 (1 << tile_columns) × (1 << tile_rows) は 128 以下であること (Annex A.3)
     pub tile_columns: Option<NonZeroUsize>,
 
-    /// タイル行数 (並列処理用)
+    /// タイル行数の log2 値 (0=分割なし, 1=2 分割)
+    ///
+    /// `None` は分割なし (SVT-AV1 の 0 相当)。行数の範囲は 0-6 で、
+    /// タイル総数 (1 << tile_columns) × (1 << tile_rows) は 128 以下であること (Annex A.3)
     pub tile_rows: Option<NonZeroUsize>,
 
     /// 先読み距離 (フレーム数)
@@ -402,7 +408,9 @@ pub struct EncoderConfig {
     /// 最大ビットレート (bps 単位、Capped CRF 用)
     pub max_bit_rate: Option<usize>,
 
-    /// スクリーンコンテンツモード (0=無効, 1=検出, 2=強制, 3=拡張検出)
+    /// スクリーンコンテンツモード (0-3)
+    ///
+    /// 0=None, 1=Block Copy + Palette, 2=content adaptive, 3=content adaptive (anti-alias aware)
     pub screen_content_mode: Option<u8>,
 
     /// イントラリフレッシュタイプ
@@ -417,7 +425,9 @@ pub struct EncoderConfig {
     /// S-frame の挿入間隔 (フレーム数)
     pub sframe_dist: Option<i32>,
 
-    /// S-frame の挿入モード (1=STRICT, 2=NEAREST)
+    /// S-frame の挿入モード (1-4)
+    ///
+    /// 1=STRICT, 2=NEAREST, 3=FLEXIBLE (ミニゴップ調整), 4=DEC_POSI (デコード順で位置調整)
     pub sframe_mode: Option<u32>,
 
     /// スーパーレゾリューションモード (0=無効, 1=固定, 2=ランダム, 3=QThreshold, 4=自動)
@@ -465,7 +475,9 @@ pub struct EncoderConfig {
     /// 最大ビットレートに対するオーバーシュート許容割合
     pub mbr_over_shoot_pct: Option<u32>,
 
-    /// リコードループ制御 (0=無効, 1=キーフレームのみ, 2=全フレーム)
+    /// リコードループ制御 (0-4)
+    ///
+    /// 0=無効, 1=KF+最大帯域超過, 2=KF/ARF/GF のみ, 3=全フレーム (ビットレート制約に基づく), 4=プリセット依存
     pub recode_loop: Option<u32>,
 
     /// リサイズモード (0=無効, 1=固定, 2=ランダム, 3=動的)
@@ -498,7 +510,9 @@ pub struct EncoderConfig {
     /// デブロッキングループフィルター (0=無効, 1=有効, 2=高精度)
     pub enable_dlf_flag: Option<u8>,
 
-    /// CDEF レベル (-1=自動, 0=無効, 1-5=レベル)
+    /// CDEF レベル (-1=自動, 0=無効, 1-4=レベル)
+    ///
+    /// -1 未満と 5 以上は SVT-AV1 がエラーを返す
     pub cdef_level: Option<i32>,
 
     /// リストレーションフィルタリング (-1=自動, 0=無効, 1=有効)

@@ -1,7 +1,7 @@
 # EncoderConfig のドキュメント誤りを修正する
 
 - Created: 2026-08-02
-- Completed: (未完了)
+- Completed: 2026-08-06
 - Branch: feature/update-config-doc-errors
 - Polished: 2026-08-06
 - Reporter: @voluntas
@@ -38,6 +38,12 @@ SVT-AV1 v4.2.0 の一次資料に合わせて doc コメントと README を修�
 
 ## 解決方法
 
-- `src/lib.rs` の `EncoderConfig` の各フィールドの doc コメントを修正する
-- `README.md` の設定表を修正する
-- `CHANGES.md` の develop セクションの misc に [UPDATE] として追記する
+- `src/lib.rs` の `EncoderConfig` の 6 フィールド (tile_columns / tile_rows / screen_content_mode / recode_loop / cdef_level / sframe_mode) の doc コメントを SVT-AV1 v4.2.0 の一次資料 (EbSvtAv1Enc.h / enc_settings.c / Parameters.md) と一致するように修正した
+  - tile_columns / tile_rows: log2 値 (0=分割なし, 1=2 分割) と範囲 (列 0-4・行 0-6)・タイル総数 128 以下の制約 (Annex A.3) を明記した。`None` は分割なし (SVT-AV1 の 0 相当)
+  - screen_content_mode: 各値の意味 (0=None, 1=Block Copy + Palette, 2=content adaptive, 3=content adaptive (anti-alias aware)) を Parameters.md の語彙で明記した
+  - recode_loop: 範囲 0-4 と各値の意味 (0=無効, 1=KF+最大帯域超過, 2=KF/ARF/GF のみ, 3=全フレーム (ビットレート制約に基づく), 4=プリセット依存) を明記した
+  - cdef_level: 範囲 (-1=自動, 0=無効, 1-4=レベル) と、-1 未満・5 以上は SVT-AV1 がエラーを返すことを明記した (enc_settings.c の検証コードを正とした)
+  - sframe_mode: 範囲 1-4 と各値の意味 (1=STRICT, 2=NEAREST, 3=FLEXIBLE (ミニゴップ調整), 4=DEC_POSI (デコード順で位置調整)) を明記した
+- `README.md` の設定表の同じ 5 フィールド (tile_columns / tile_rows / recode_loop / cdef_level / sframe_mode) の誤りを修正した (screen_content_mode は範囲 (0-3) のみの記載で誤りがなかったため対象外)
+- `CHANGES.md` の develop セクションの misc に [UPDATE] として追記した
+- コード・テストの変更はない (doc と README の修正のみ。既存テストが全て成功することを確認した)
