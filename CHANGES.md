@@ -13,6 +13,8 @@
 
 - [CHANGE] MSRV (rust-version) を 1.93 に上げる
   - @voluntas
+- [CHANGE] `Encoder::next_frame()` の戻り値を `Option<EncodedFrame>` から `Result<Option<EncodedFrame>, Error>` に変更する
+  - @voluntas
 - [ADD] Ubuntu 26.04 x86_64 / arm64 向けの prebuilt バイナリを追加する
   - @voluntas
 - [ADD] `EncodedFrame::is_keyframe()` の判定対象に Forward Key を追加する

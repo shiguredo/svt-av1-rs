@@ -682,6 +682,8 @@ pub struct Encoder {
     height: usize,
     color_format: ColorFormat,
     eos: bool,
+    // 早期リターンの有効条件の判定に使用する (CBR のみで有効)
+    rate_control_mode: RcMode,
 }
 
 impl Encoder {
@@ -1355,6 +1357,7 @@ impl Encoder {
                 height: config.height,
                 color_format: config.color_format,
                 eos: false,
+                rate_control_mode: config.rate_control_mode,
             })
         }
     }
@@ -1374,6 +1377,12 @@ impl Encoder {
     /// なお Y プレーンのストライドは入力フレームの幅と等しいことが前提
     ///
     /// また B フレームは扱わない前提（つまり入力フレームと出力フレームの順番が一致する）
+    ///
+    /// VBR / CRF の既定構成 (overlay なし) では、[`Encoder::finish()`] を呼ぶまで
+    /// エンコード済みパケットが得られないことがある
+    /// (RANDOM_ACCESS ではルックアヘッドによりパケット生成が遅延するため)。
+    /// CBR では enable_overlays が強制無効になり ARF / overlay が生成されないため、
+    /// エンコードしたフレーム数分のパケットが順次得られる
     pub fn encode(&mut self, frame: &FrameData<'_>, options: &EncodeOptions) -> Result<(), Error> {
         // EOS 送信済みの場合は追加フレームを受け付けない
         if self.eos {
@@ -1498,39 +1507,67 @@ impl Encoder {
     /// エンコード済みのフレームを取り出す
     ///
     /// [`Encoder::encode()`] や [`Encoder::finish()`] の後には、
-    /// このメソッドを、結果が `None` になるまで呼び出し続ける必要がある
-    pub fn next_frame(&mut self) -> Option<EncodedFrame<'_>> {
-        // EOS 送信前に全フレーム受信済みの場合は API を呼ばずに None を返す。
+    /// このメソッドを、結果が `Ok(None)` になるまで呼び出し続ける必要がある
+    ///
+    /// エンコードエラーが発生した場合や、成功コードで null の出力が返った場合は
+    /// `Err` を返す
+    ///
+    /// VBR / CRF の既定構成 (overlay なし) では、[`Encoder::finish()`] を呼ぶまで
+    /// エンコード済みパケットが得られないことがある
+    /// (RANDOM_ACCESS ではルックアヘッドによりパケット生成が遅延するため)。
+    /// CBR では enable_overlays が強制無効になり ARF / overlay が生成されないため、
+    /// エンコードしたフレーム数分のパケットが順次得られる
+    pub fn next_frame(&mut self) -> Result<Option<EncodedFrame<'_>>, Error> {
+        // EOS 送信前に全フレーム受信済みの場合は API を呼ばずに Ok(None) を返す。
         // SVT-AV1 の低遅延モード (CBR) では svt_av1_enc_get_packet が
         // pic_send_done=0 でもブロックするため、この早期リターンが必要。
-        if !self.eos && self.received_count >= self.frame_count {
-            return None;
+        // 早期リターンは出力パケット数 == 入力フレーム数 を前提とするが、
+        // これは ARF / overlay パケットを出力しない LOW_DELAY (CBR) でのみ成立する
+        if !self.eos
+            && self.rate_control_mode == RcMode::Cbr
+            && self.received_count >= self.frame_count
+        {
+            return Ok(None);
         }
 
         let mut output = std::ptr::null_mut();
         let pic_send_done = self.eos as u8;
         let code =
             unsafe { sys::svt_av1_enc_get_packet(self.handle.inner, &mut output, pic_send_done) };
-        if code == sys::EbErrorType_EB_NoErrorEmptyQueue {
-            return None;
+        // パケットがまだ無い状態は正常な待機状態であり、エラーではない
+        // (EB_NoErrorFifoShutdown は v4.2.0 では戻り値に現れないが、正常系として扱う)
+        if code == sys::EbErrorType_EB_NoErrorEmptyQueue
+            || code == sys::EbErrorType_EB_NoErrorFifoShutdown
+        {
+            return Ok(None);
         }
         if code != sys::EbErrorType_EB_ErrorNone {
-            log::error!("svt_av1_enc_get_packet() failed: code={code}");
-            return None;
+            // エンコードエラーは握りつぶさず呼び出し元に伝播する。
+            // SVT-AV1 はエラー時も *p_buffer にエラーパケットをセットするため、
+            // バッファプールへ返却してから Err を返す
+            if !output.is_null() {
+                unsafe { sys::svt_av1_enc_release_out_buffer(&mut output) };
+            }
+            return Err(Error {
+                function: "svt_av1_enc_get_packet",
+                code,
+            });
         }
 
         // FFI 境界の防御: 成功コードでも null が返った場合に備える
         if output.is_null() {
-            log::error!("svt_av1_enc_get_packet() returned success but output is null");
-            return None;
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::next_frame (null output)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
         }
 
         let frame = unsafe { EncodedFrame(&mut *output) };
         if (frame.0.flags & sys::EB_BUFFERFLAG_EOS) != 0 {
-            None
+            Ok(None)
         } else {
             self.received_count += 1;
-            Some(frame)
+            Ok(Some(frame))
         }
     }
 
@@ -1721,19 +1758,31 @@ mod tests {
         let options = EncodeOptions::default();
 
         encoder.encode(&frame, &options).expect("failed to encode");
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
 
         // 一フレームだけ処理すると SVT-AV1 が `--avif 1` を使うようにエラーログを出すので
         // それを防止するために二フレーム目も与えている
         encoder.encode(&frame, &options).expect("failed to encode");
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
 
         encoder.finish().expect("failed to finish");
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
 
@@ -1768,7 +1817,11 @@ mod tests {
         encoder.finish().expect("failed to finish");
 
         let mut count = 0;
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             count += 1;
         }
         assert_eq!(count, 2);
@@ -1798,7 +1851,11 @@ mod tests {
         encoder.finish().expect("failed to finish");
 
         let mut count = 0;
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             count += 1;
         }
         assert_eq!(count, 2);
@@ -1833,7 +1890,11 @@ mod tests {
         encoder.finish().expect("failed to finish");
 
         let mut count = 0;
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             count += 1;
         }
         assert_eq!(count, 2);
@@ -1973,7 +2034,11 @@ mod tests {
 
         // 不正フレームでは frame_count が進まないため、正常フレーム 2 枚がそのまま出力される
         let mut encoded_count = 0;
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
         assert_eq!(encoded_count, 2);
@@ -2022,7 +2087,7 @@ mod tests {
 
         let mut keyframes = Vec::new();
         let mut inter_count = 0;
-        while let Some(frame) = encoder.next_frame() {
+        while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
             if frame.is_keyframe() {
                 keyframes.push((frame.pts(), frame.pic_type()));
             } else {
@@ -2090,14 +2155,17 @@ mod tests {
 
         // 先頭フレームは KEY として出力され、is_keyframe() が true を返す
         {
-            let first = encoder.next_frame().expect("先頭フレームが出力されない");
+            let first = encoder
+                .next_frame()
+                .expect("next_frame の呼び出しに失敗")
+                .expect("先頭フレームが出力されない");
             assert_eq!(first.pic_type(), PictureType::Key);
             assert!(first.is_keyframe());
         }
 
         // 後続のフレームでは is_keyframe() が false を返す
         let mut inter_count = 0;
-        while let Some(frame) = encoder.next_frame() {
+        while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
             assert!(!frame.is_keyframe());
             inter_count += 1;
         }
@@ -2128,7 +2196,7 @@ mod tests {
             .expect("failed to encode");
         encoder.finish().expect("failed to finish");
 
-        while let Some(frame) = encoder.next_frame() {
+        while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
             assert!(!frame.data().is_empty());
         }
     }

@@ -165,13 +165,14 @@ fn encode_with_svt_av1(
     for (y, u, v) in frames {
         let frame = shiguredo_svt_av1::FrameData::I420 { y, u, v };
         encoder.encode(&frame, &options).expect("failed to encode");
-        while let Some(encoded) = encoder.next_frame() {
+        while let Some(encoded) = encoder.next_frame().expect("next_frame の呼び出しに失敗")
+        {
             packets.push(encoded.data().to_vec());
         }
     }
 
     encoder.finish().expect("failed to finish");
-    while let Some(encoded) = encoder.next_frame() {
+    while let Some(encoded) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
         packets.push(encoded.data().to_vec());
     }
 
@@ -269,6 +270,10 @@ fn test_psnr_svt_av1_aom_vbr() {
 }
 
 /// SVT-AV1 CBR カラーバーの PSNR 検証
+///
+/// encode 直後の drain が CBR (LOW_DELAY) の早期リターン経路を踏む。
+/// 早期リターンが削除された場合は svt_av1_enc_get_packet がブロックして
+/// テストがハングするため、このテストは早期リターンの回帰ガードを兼ねる
 #[test]
 fn test_psnr_svt_av1_aom_cbr() {
     let mut config =
