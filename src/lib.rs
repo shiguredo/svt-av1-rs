@@ -277,7 +277,7 @@ pub enum PictureType {
     Key,
     /// 非参照フレーム
     NonRef,
-    /// Forward キーフレーム
+    /// Forward Key
     ForwardKey,
     /// Show Existing フレーム
     ShowExisting,
@@ -1579,9 +1579,9 @@ impl EncodedFrame<'_> {
     ///
     /// SVT-AV1 のピクチャタイプ意味論においてキーフレームに相当するかどうかで判定する。
     /// 判定対象はキーフレーム (`EB_AV1_KEY_PICTURE`)、イントラオンリー
-    /// (`EB_AV1_INTRA_ONLY_PICTURE`)、Forward Key (`EB_AV1_FW_KEY_PICTURE`) の 3 つ。
+    /// (`EB_AV1_INTRA_ONLY_PICTURE`)、 Forward Key (`EB_AV1_FW_KEY_PICTURE`) の 3 つ。
     /// SVT-AV1 v4.2.0 では Forward Key はエンコード出力に現れないが、将来
-    /// 出力されるようになった場合に備えて判定対象に含めている
+    /// 出力されるようになった場合に備えて判定対象に含めている。
     pub fn is_keyframe(&self) -> bool {
         matches!(
             self.0.pic_type,
@@ -1978,8 +1978,9 @@ mod tests {
         // 意図しないシーンチェンジ検出による追加キーフレームを避ける
         config.scene_change_detection = false;
         config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
-        // FwdkfRefresh では hierarchical_levels が 4 に強制されるため mini-gop サイズは 16。
-        // keyint が mini-gop サイズの倍数になるよう 31 を選ぶ (keyint = 32)
+        // FwdkfRefresh は hierarchical_levels が 4 に強制される (enc_handle.c の設定処理)。
+        // したがって mini-gop サイズは 16 になり、keyint が mini-gop サイズの倍数になるよう
+        // 31 を選ぶ (keyint = 32)
         config.intra_period_length = NonZeroUsize::new(31);
         let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
@@ -2007,22 +2008,16 @@ mod tests {
         while let Some(frame) = encoder.next_frame() {
             if frame.is_keyframe() {
                 keyframes.push((frame.pts(), frame.pic_type()));
-                // キーフレームはピクチャタイプ意味論上 Key / IntraOnly / ForwardKey の
-                // いずれかとして出力される (v4.2.0 では Forward Key は出力されないが、
-                // 将来出力されるようになった場合も is_keyframe() と整合するよう含めている)
-                assert!(matches!(
-                    frame.pic_type(),
-                    PictureType::Key | PictureType::IntraOnly | PictureType::ForwardKey
-                ));
             } else {
                 inter_count += 1;
             }
         }
 
-        // 先頭 (pts=0) と keyint 周期 (pts=32) にキーフレームが出力される
-        // 周期キーフレーム (CRA) は v4.2.0 では IntraOnly として出力され、
-        // FwdkfRefresh が実際に適用されていることを確認する
-        // (SVT-AV1 が Forward Key を出力するようになった場合はこの断言を更新する)
+        // 先頭 (pts=0) と keyint 周期 (pts=32) にキーフレームが出力される。
+        // キーフレームのピクチャタイプは v4.2.0 では Key / IntraOnly として出力される
+        // (Forward Key は出力されない。将来出力されるようになった場合はこの断言を更新する)。
+        // 周期キーフレーム (CRA) が IntraOnly であることは、FwdkfRefresh が実際に
+        // 適用されていることの確認になる
         assert_eq!(
             keyframes,
             vec![(0, PictureType::Key), (32, PictureType::IntraOnly)]
@@ -2033,9 +2028,10 @@ mod tests {
 
     #[test]
     fn is_keyframe_key_picture() {
-        // 閉じた GOP 構成の先頭フレームは KEY_PICTURE として出力され、
+        // 閉じた GOP 構成 (KfRefresh 明示) の先頭フレームは KEY_PICTURE として出力され、
         // is_keyframe() が true を返す (KEY_PICTURE 分岐の検証)
-        let config = encoder_config();
+        let mut config = encoder_config();
+        config.intra_refresh_type = Some(IntraRefreshType::KfRefresh);
         let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
@@ -2063,9 +2059,14 @@ mod tests {
         }
 
         // 後続のフレームでは is_keyframe() が false を返す
+        let mut inter_count = 0;
         while let Some(frame) = encoder.next_frame() {
             assert!(!frame.is_keyframe());
+            inter_count += 1;
         }
+        // 後続のフレームが少なくとも 1 つ出力されることを確認する
+        // (出力が先頭フレームだけだとテストが黙ってパスするため)
+        assert!(inter_count > 0);
     }
 
     #[test]
