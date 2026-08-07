@@ -15,6 +15,8 @@
   - @voluntas
 - [CHANGE] `Encoder::next_frame()` の戻り値を `Option<EncodedFrame>` から `Result<Option<EncodedFrame>, Error>` に変更する
   - @voluntas
+- [CHANGE] CBR と FwdkfRefresh の組み合わせを禁止する
+  - @voluntas
 - [ADD] Ubuntu 26.04 x86_64 / arm64 向けの prebuilt バイナリを追加する
   - @voluntas
 - [ADD] `EncodedFrame::is_keyframe()` の判定対象に Forward Key を追加する

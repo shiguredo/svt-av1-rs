@@ -259,6 +259,9 @@ pub enum Tune {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntraRefreshType {
     /// Forward Key Frame Refresh (Open GOP)
+    ///
+    /// CBR とは組み合わせられない (LOW_DELAY でパケット生成が入力フレーム数に
+    /// 追いつかず [`Encoder::next_frame()`] が永久ブロックするため)
     FwdkfRefresh,
     /// Key Frame Refresh (Closed GOP)
     KfRefresh,
@@ -414,6 +417,8 @@ pub struct EncoderConfig {
     pub screen_content_mode: Option<u8>,
 
     /// イントラリフレッシュタイプ
+    ///
+    /// [`IntraRefreshType::FwdkfRefresh`] は CBR とは組み合わせられない
     pub intra_refresh_type: Option<IntraRefreshType>,
 
     /// RTC (Real-Time Coding) モード
@@ -768,6 +773,15 @@ impl Encoder {
         }
         if config.rate_control_mode == RcMode::CqpOrCrf && config.target_bit_rate > 0 {
             bad("EncoderConfig: target_bit_rate must be 0 for CRF mode")?;
+        }
+        // FwdkfRefresh は hierarchical_levels が 4 に強制される (enc_handle.c の設定処理) ため、
+        // LOW_DELAY (CBR) ではパケット生成が入力フレーム数に追いつかず、
+        // svt_av1_enc_get_packet が永久ブロックする。
+        // next_frame() の早期リターン前提 (CBR では出力数 == 入力数) が破れるため禁止する
+        if config.rate_control_mode == RcMode::Cbr
+            && config.intra_refresh_type == Some(IntraRefreshType::FwdkfRefresh)
+        {
+            bad("EncoderConfig: FwdkfRefresh cannot be used with CBR")?;
         }
 
         // FFI へ渡す際の縮小キャストで切り捨て・符号反転が起きないことを検証する
@@ -1381,7 +1395,7 @@ impl Encoder {
     /// VBR / CRF の既定構成 (overlay なし) では、[`Encoder::finish()`] を呼ぶまで
     /// エンコード済みパケットが得られないことがある
     /// (RANDOM_ACCESS ではルックアヘッドによりパケット生成が遅延するため)。
-    /// CBR では enable_overlays が強制無効になり ARF / overlay が生成されないため、
+    /// CBR では (VBR と同様に) enable_overlays が強制無効になり ARF / overlay が生成されないため、
     /// エンコードしたフレーム数分のパケットが順次得られる
     pub fn encode(&mut self, frame: &FrameData<'_>, options: &EncodeOptions) -> Result<(), Error> {
         // EOS 送信済みの場合は追加フレームを受け付けない
@@ -1515,7 +1529,7 @@ impl Encoder {
     /// VBR / CRF の既定構成 (overlay なし) では、[`Encoder::finish()`] を呼ぶまで
     /// エンコード済みパケットが得られないことがある
     /// (RANDOM_ACCESS ではルックアヘッドによりパケット生成が遅延するため)。
-    /// CBR では enable_overlays が強制無効になり ARF / overlay が生成されないため、
+    /// CBR では (VBR と同様に) enable_overlays が強制無効になり ARF / overlay が生成されないため、
     /// エンコードしたフレーム数分のパケットが順次得られる
     pub fn next_frame(&mut self) -> Result<Option<EncodedFrame<'_>>, Error> {
         // EOS 送信前に全フレーム受信済みの場合は API を呼ばずに Ok(None) を返す。
@@ -1727,6 +1741,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cbr_fwdkf_refresh_rejected() {
+        // CBR と FwdkfRefresh の組み合わせは LOW_DELAY でパケット生成が
+        // 入力フレーム数に追いつかず next_frame() が永久ブロックするため、
+        // Encoder::new でエラーを返す
+        let mut config = encoder_config();
+        config.rate_control_mode = RcMode::Cbr;
+        config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
+        let err = Encoder::with_log_level(&config, "0").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("FwdkfRefresh cannot be used with CBR")
+        );
+    }
+
+    #[test]
     fn init_encoder() {
         // OK
         let config = encoder_config();
@@ -1842,15 +1871,24 @@ mod tests {
             v: &v,
         };
 
-        encoder
-            .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder
-            .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
-
+        // CBR (LOW_DELAY) ではフレームごとにパケットが順次得られる。
+        // encode 直後の drain は早期リターン経路 (received_count >= frame_count) を踏む。
+        // 早期リターンが削除された場合は svt_av1_enc_get_packet がブロックして
+        // テストがハングするため、このテストは早期リターンの回帰ガードを兼ねる
         let mut count = 0;
+        for _ in 0..2 {
+            encoder
+                .encode(&frame, &EncodeOptions::default())
+                .expect("failed to encode");
+            while encoder
+                .next_frame()
+                .expect("next_frame の呼び出しに失敗")
+                .is_some()
+            {
+                count += 1;
+            }
+        }
+        encoder.finish().expect("failed to finish");
         while encoder
             .next_frame()
             .expect("next_frame の呼び出しに失敗")
