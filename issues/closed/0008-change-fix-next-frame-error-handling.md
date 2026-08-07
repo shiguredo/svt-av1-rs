@@ -1,7 +1,7 @@
 # Encoder::next_frame() のエラー処理と早期リターンを改善する
 
 - Created: 2026-08-02
-- Completed: (未完了)
+- Completed: 2026-08-06
 - Branch: feature/change-next-frame-error-handling
 - Polished: 2026-08-06
 - Reporter: @voluntas
@@ -33,7 +33,13 @@
 
 ## 解決方法
 
-- `src/lib.rs` の `Encoder::next_frame()` を `Result<Option<EncodedFrame>, Error>` に変更する (公開 API の破壊的変更のため、`CHANGES.md` に [CHANGE] として記載する)
-- 呼び出し側を追随して書き換える (`src/lib.rs` の `#[cfg(test)]` モジュールの encode 系テスト、`tests/test_psnr_aom.rs` / `tests/test_psnr_dav1d.rs`、`README.md` のサンプルコード)
-- `Encoder` 構造体に `rate_control_mode` フィールドを追加し、早期リターンの条件を CBR でのみ有効にする
-- `encode()` / `next_frame()` の doc を更新する (0005 で追加される回帰テストも Result 化に追随させる)
+- `src/lib.rs` の `Encoder::next_frame()` を `Result<Option<EncodedFrame>, Error>` に変更した (公開 API の破壊的変更のため、`CHANGES.md` に [CHANGE] として記載した)
+  - FFI エラーは `Err` として呼び出し元に伝播する。`EB_NoErrorEmptyQueue` / `EB_NoErrorFifoShutdown`・EOS フラグ付きパケット・早期リターンは `Ok(None)` を返す
+  - 成功コードで null が返った場合は `EB_ErrorBadParameter` の `Err` を返す
+  - FFI エラー時に SVT-AV1 がセットするエラーパケットは `svt_av1_enc_release_out_buffer` でバッファプールへ返却してから `Err` を返す (リーク防止)
+- `Encoder` 構造体に `rate_control_mode` フィールドを追加し、早期リターンを CBR (LOW_DELAY) でのみ有効にした
+- CBR と FwdkfRefresh の組み合わせは、LOW_DELAY でパケット生成が入力フレーム数に追いつかず `next_frame()` が永久ブロックすることを実測確認し、`validate_config` で禁止した (テスト `cbr_fwdkf_refresh_rejected` を追加)
+- `encode()` / `next_frame()` の doc に、VBR / CRF の既定構成 (overlay なし) では `finish()` を呼ぶまでパケットが得られないことがある旨を明記した (原因は RANDOM_ACCESS のルックアヘッドによるパケット生成の遅延)
+- 呼び出し側を追随して書き換えた (`src/lib.rs` の `#[cfg(test)]` モジュールの encode 系テスト、`tests/test_psnr_aom.rs` / `tests/test_psnr_dav1d.rs`、`README.md` のサンプルコード)
+- `encode_cbr` を encode 直後の drain パターンに変更し、早期リターン経路を単体テストで検証する回帰ガードとした (PSNR CBR テストにも早期リターン回帰ガードのコメントを追記)
+- `CHANGES.md` の develop セクションに [CHANGE] として 2 エントリ追記した (next_frame() の Result 化、CBR と FwdkfRefresh の組み合わせ禁止)

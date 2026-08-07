@@ -134,7 +134,7 @@ encoder.encode(&frame, &EncodeOptions::default())?;
 encoder.encode(&frame, &EncodeOptions { force_keyframe: true })?;
 
 // エンコード済みフレームを取得
-while let Some(frame) = encoder.next_frame() {
+while let Some(frame) = encoder.next_frame()? {
     let data = frame.data();
     let is_key = frame.is_keyframe();
     println!("encoded: {} bytes, keyframe: {}", data.len(), is_key);
@@ -142,7 +142,7 @@ while let Some(frame) = encoder.next_frame() {
 
 // 残りのフレームをフラッシュ
 encoder.finish()?;
-while let Some(frame) = encoder.next_frame() {
+while let Some(frame) = encoder.next_frame()? {
     // ...
 }
 ```
