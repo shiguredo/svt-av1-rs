@@ -1772,7 +1772,7 @@ mod tests {
         let config = encoder_config();
         let width = config.width;
         let height = config.height;
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
         let mut encoded_count = 0;
 
         let size = width * height;
@@ -1786,7 +1786,7 @@ mod tests {
         };
         let options = EncodeOptions::default();
 
-        encoder.encode(&frame, &options).expect("failed to encode");
+        encoder.encode(&frame, &options).expect("エンコードに失敗");
         while encoder
             .next_frame()
             .expect("next_frame の呼び出しに失敗")
@@ -1797,7 +1797,7 @@ mod tests {
 
         // 一フレームだけ処理すると SVT-AV1 が `--avif 1` を使うようにエラーログを出すので
         // それを防止するために二フレーム目も与えている
-        encoder.encode(&frame, &options).expect("failed to encode");
+        encoder.encode(&frame, &options).expect("エンコードに失敗");
         while encoder
             .next_frame()
             .expect("next_frame の呼び出しに失敗")
@@ -1806,7 +1806,7 @@ mod tests {
             encoded_count += 1;
         }
 
-        encoder.finish().expect("failed to finish");
+        encoder.finish().expect("finish の呼び出しに失敗");
         while encoder
             .next_frame()
             .expect("next_frame の呼び出しに失敗")
@@ -1824,7 +1824,7 @@ mod tests {
         config.target_bit_rate = 1_000_000;
         config.fps_numerator = 1;
         config.fps_denominator = 1;
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let size = 320 * 320;
         // 10-bit: 各ピクセル 2 バイト
@@ -1839,11 +1839,11 @@ mod tests {
 
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
+            .expect("エンコードに失敗");
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
+            .expect("エンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
 
         let mut count = 0;
         while encoder
@@ -1860,7 +1860,7 @@ mod tests {
     fn encode_cbr() {
         let mut config = encoder_config();
         config.rate_control_mode = RcMode::Cbr;
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
         let u = vec![0u8; 160 * 160];
@@ -1879,7 +1879,7 @@ mod tests {
         for _ in 0..2 {
             encoder
                 .encode(&frame, &EncodeOptions::default())
-                .expect("failed to encode");
+                .expect("エンコードに失敗");
             while encoder
                 .next_frame()
                 .expect("next_frame の呼び出しに失敗")
@@ -1888,7 +1888,7 @@ mod tests {
                 count += 1;
             }
         }
-        encoder.finish().expect("failed to finish");
+        encoder.finish().expect("finish の呼び出しに失敗");
         while encoder
             .next_frame()
             .expect("next_frame の呼び出しに失敗")
@@ -1908,7 +1908,7 @@ mod tests {
         config.rate_control_mode = RcMode::CqpOrCrf;
         config.target_bit_rate = 0;
         config.qp = Some(35);
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
         let u = vec![0u8; 160 * 160];
@@ -1921,11 +1921,11 @@ mod tests {
 
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
+            .expect("エンコードに失敗");
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
+            .expect("エンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
 
         let mut count = 0;
         while encoder
@@ -1942,7 +1942,7 @@ mod tests {
     fn color_format_mismatch() {
         // I420 エンコーダーに I42010 データを渡すとエラーになる
         let config = encoder_config();
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320 * 2];
         let u = vec![0u8; 160 * 160 * 2];
@@ -2215,7 +2215,7 @@ mod tests {
     #[test]
     fn encoded_frame_has_data() {
         let config = encoder_config();
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
         let u = vec![0u8; 160 * 160];
@@ -2228,11 +2228,11 @@ mod tests {
 
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
+            .expect("エンコードに失敗");
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
+            .expect("エンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
 
         while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
             assert!(!frame.data().is_empty());

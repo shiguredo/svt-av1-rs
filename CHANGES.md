@@ -38,6 +38,12 @@
   - @voluntas
 - [UPDATE] `EncoderConfig` の doc コメントを SVT-AV1 v4.2.0 の一次資料と一致するように修正する
   - @voluntas
+- [UPDATE] テストの assert / expect メッセージを日本語に統一する
+  - @voluntas
+- [UPDATE] 依存ライブラリに用途コメントを追加する
+  - @voluntas
+- [UPDATE] CI とローカルの検査設定をプロジェクト規約に合わせて整備する
+  - @voluntas
 
 ## 2026.1.0
 

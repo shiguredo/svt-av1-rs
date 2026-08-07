@@ -1,7 +1,7 @@
 # プロジェクト規約違反を是正する
 
 - Created: 2026-08-02
-- Completed: (未完了)
+- Completed: 2026-08-06
 - Branch: feature/refactor-fix-rule-violations
 - Polished: 2026-08-06
 - Reporter: @voluntas
@@ -33,9 +33,10 @@ AGENTS.md と shiguredo-rust 規約への違反を是正する。本 issue は�
 
 ## 解決方法
 
-- テストの英語 assert / expect メッセージを日本語に変更する (assert の検証対象文字列は対象外)
-- `Cargo.toml` の各依存に日本語の用途コメントを追加する
-- `ci.yml` の clippy に `--all-targets` を追加する (`-D warnings` は維持)。`Makefile` の clippy ターゲットにも `--all-targets` を追加する
-- `prek.toml` に `default_stages = ["pre-commit"]` と `default_install_hook_types = ["pre-commit", "pre-push"]` を追加し、cargo-test に `stages = ["pre-push"]` を追加し、tombi フックを追加する (shiguredo-rust スキルの参考設定 prek.toml に従い、tombi-lint / tombi-format を追加する。`Cargo.lock` は除外する)。設定後は `prek install --prepare-hooks` を再実行して pre-push シムをインストールする
-- `CHANGES.md` の develop セクションの misc に [UPDATE] として追記する
-- なお `src/lib.rs` の `#[cfg(test)]` モジュールは 0008 でも書き換えられるため、実装時に調整する
+- テストの英語 assert / expect メッセージを日本語に変更した (assert の検証対象文字列 (ライブラリのエラーメッセージ) は対象外として英語のまま)
+  - `src/lib.rs` の `#[cfg(test)]` モジュール: "failed to create" / "failed to encode" / "failed to finish" を日本語に統一した
+  - `tests/test_psnr_aom.rs` / `tests/test_psnr_dav1d.rs`: エンコーダー・デコーダー生成、エンコード・デコード、finish、PSNR 検証の assert メッセージを日本語に統一した (技術用語 (PSNR / dB) は許容)
+- `Cargo.toml` の各依存 (log / shiguredo_aom / shiguredo_dav1d / bindgen / shiguredo_cmake / shiguredo_toml) に日本語の用途コメントを追加した
+- `ci.yml` の clippy に `--all-targets` を追加した (`-D warnings` は維持)。`Makefile` の clippy ターゲットにも `--all-targets` を追加し、test / cover / check ターゲットにも `--features source-build` を追加して CI と検査条件を統一した
+- `prek.toml` に `default_stages = ["pre-commit"]` と `default_install_hook_types = ["pre-commit", "pre-push"]` を追加し、cargo-test に `stages = ["pre-push"]` を追加し、tombi-lint / tombi-format フックを追加した (`Cargo.lock` は除外)。`prek install --prepare-hooks` を再実行して pre-push シムをインストールした
+- `CHANGES.md` の develop セクションの misc に [UPDATE] として 3 エントリ追記した (テストメッセージ日本語化 / 依存コメント追加 / 検査設定整備)

@@ -18,15 +18,21 @@ url = "https://gitlab.com/AOMediaCodec/SVT-AV1"
 version = "v4.2.0"
 
 [dependencies]
+# ログ出力に使用する
 log = "0.4"
 
 [dev-dependencies]
+# PSNR テストで aom によるデコードに使用する
 shiguredo_aom = "2026.2.0-canary.5"
+# PSNR テストで dav1d によるデコードに使用する
 shiguredo_dav1d = "2026.2.0-canary.2"
 
 [build-dependencies]
+# SVT-AV1 の C ヘッダから Rust バインディングを生成する
 bindgen = "0.72"
+# SVT-AV1 の CMake ビルドに使用する
 shiguredo_cmake = "4.3"
+# Cargo.toml の外部依存メタデータをパースする
 shiguredo_toml = "2026.2"
 
 [features]
