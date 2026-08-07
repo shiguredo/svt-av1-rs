@@ -129,17 +129,17 @@ fn extract_y_plane(frame: &shiguredo_dav1d::DecodedFrame) -> Vec<u8> {
 /// dav1d でデコードして (Y プレーン, 幅, 高さ) の一覧を返す
 fn decode_with_dav1d(packets: &[Vec<u8>]) -> Vec<(Vec<u8>, usize, usize)> {
     let config = DecoderConfig::new();
-    let mut decoder = Decoder::new(config).expect("failed to create dav1d decoder");
+    let mut decoder = Decoder::new(config).expect("dav1d デコーダーの生成に失敗");
     let mut decoded = Vec::new();
 
     for packet in packets {
-        decoder.decode(packet).expect("failed to decode");
+        decoder.decode(packet).expect("デコードに失敗");
         while let Ok(Some(frame)) = decoder.next_frame() {
             decoded.push((extract_y_plane(&frame), frame.width(), frame.height()));
         }
     }
 
-    decoder.finish().expect("failed to finish");
+    decoder.finish().expect("finish の呼び出しに失敗");
     while let Ok(Some(frame)) = decoder.next_frame() {
         decoded.push((extract_y_plane(&frame), frame.width(), frame.height()));
     }
@@ -157,7 +157,7 @@ fn encode_with_svt_av1(
     frames: &[(Vec<u8>, Vec<u8>, Vec<u8>)],
 ) -> Vec<Vec<u8>> {
     let mut encoder =
-        shiguredo_svt_av1::Encoder::new(config).expect("failed to create svt-av1 encoder");
+        shiguredo_svt_av1::Encoder::new(config).expect("svt-av1 エンコーダーの生成に失敗");
     let options = shiguredo_svt_av1::EncodeOptions {
         force_keyframe: false,
     };
@@ -165,14 +165,14 @@ fn encode_with_svt_av1(
 
     for (y, u, v) in frames {
         let frame = shiguredo_svt_av1::FrameData::I420 { y, u, v };
-        encoder.encode(&frame, &options).expect("failed to encode");
+        encoder.encode(&frame, &options).expect("エンコードに失敗");
         while let Some(encoded) = encoder.next_frame().expect("next_frame の呼び出しに失敗")
         {
             packets.push(encoded.data().to_vec());
         }
     }
 
-    encoder.finish().expect("failed to finish");
+    encoder.finish().expect("finish の呼び出しに失敗");
     while let Some(encoded) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
         packets.push(encoded.data().to_vec());
     }
@@ -195,23 +195,23 @@ fn roundtrip_colorbar(
         .collect();
 
     let packets = encode_with_svt_av1(config, &input_frames);
-    assert!(!packets.is_empty(), "no encoded packets");
+    assert!(!packets.is_empty(), "エンコードされたパケットがない");
 
     let decoded_frames = decode_with_dav1d(&packets);
     assert_eq!(
         decoded_frames.len(),
         num_frames,
-        "decoded {} frames, expected {num_frames}",
+        "デコード結果が {} フレーム (期待値 {num_frames})",
         decoded_frames.len()
     );
 
     for (i, (decoded_y, w, h)) in decoded_frames.iter().enumerate() {
-        assert_eq!(*w, width, "frame {i}: width mismatch");
-        assert_eq!(*h, height, "frame {i}: height mismatch");
+        assert_eq!(*w, width, "フレーム {i}: 幅が一致しない");
+        assert_eq!(*h, height, "フレーム {i}: 高さが一致しない");
         let psnr = psnr_y(&y, decoded_y, width, height);
         assert!(
             psnr >= min_psnr_db,
-            "frame {i}: PSNR {psnr:.1} dB < {min_psnr_db} dB"
+            "フレーム {i}: PSNR {psnr:.1} dB が {min_psnr_db} dB 未満"
         );
     }
 }
@@ -240,14 +240,14 @@ fn test_roundtrip_svt_av1_dav1d_dummy_frames() {
         .collect();
 
     let packets = encode_with_svt_av1(config, &input_frames);
-    assert!(!packets.is_empty(), "no encoded packets");
+    assert!(!packets.is_empty(), "エンコードされたパケットがない");
 
     let decoded_frames = decode_with_dav1d(&packets);
     assert_eq!(decoded_frames.len(), num_frames);
     for (i, (y, w, h)) in decoded_frames.iter().enumerate() {
-        assert_eq!(*w, width, "frame {i}: width mismatch");
-        assert_eq!(*h, height, "frame {i}: height mismatch");
-        assert!(!y.is_empty(), "frame {i}: empty Y plane");
+        assert_eq!(*w, width, "フレーム {i}: 幅が一致しない");
+        assert_eq!(*h, height, "フレーム {i}: 高さが一致しない");
+        assert!(!y.is_empty(), "フレーム {i}: Y プレーンが空");
     }
 }
 
