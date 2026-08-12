@@ -58,6 +58,12 @@ pub enum ColorFormat {
 }
 
 /// 入力フレームデータ
+///
+/// 各プレーンの長さ (バイト数) は、`EncoderConfig` の width / height / color_format から
+/// 計算されるプレーンサイズと一致させること
+/// (Y は width x height バイト、U / V は ceil(width/2) x ceil(height/2) バイト。
+/// I42010 では各ピクセル 2 バイトのため 2 倍する)。
+/// 長さが一致しない場合、[`Encoder::encode()`] はエラーを返す
 #[derive(Debug)]
 pub enum FrameData<'a> {
     /// I420 (3 プレーン: Y, U, V)
@@ -253,6 +259,9 @@ pub enum Tune {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntraRefreshType {
     /// Forward Key Frame Refresh (Open GOP)
+    ///
+    /// CBR とは組み合わせられない (LOW_DELAY でパケット生成が入力フレーム数に
+    /// 追いつかず [`Encoder::next_frame()`] が永久ブロックするため)
     FwdkfRefresh,
     /// Key Frame Refresh (Closed GOP)
     KfRefresh,
@@ -271,7 +280,7 @@ pub enum PictureType {
     Key,
     /// 非参照フレーム
     NonRef,
-    /// Forward キーフレーム
+    /// Forward Key
     ForwardKey,
     /// Show Existing フレーム
     ShowExisting,
@@ -327,10 +336,16 @@ pub struct EncoderConfig {
     /// キーフレーム間隔 (フレーム数)
     pub intra_period_length: Option<NonZeroUsize>,
 
-    /// タイル列数 (並列処理用)
+    /// タイル列数の log2 値 (0=分割なし, 1=2 分割)
+    ///
+    /// `None` は分割なし (SVT-AV1 の 0 相当)。列数の範囲は 0-4 で、
+    /// タイル総数 (1 << tile_columns) × (1 << tile_rows) は 128 以下であること (Annex A.3)
     pub tile_columns: Option<NonZeroUsize>,
 
-    /// タイル行数 (並列処理用)
+    /// タイル行数の log2 値 (0=分割なし, 1=2 分割)
+    ///
+    /// `None` は分割なし (SVT-AV1 の 0 相当)。行数の範囲は 0-6 で、
+    /// タイル総数 (1 << tile_columns) × (1 << tile_rows) は 128 以下であること (Annex A.3)
     pub tile_rows: Option<NonZeroUsize>,
 
     /// 先読み距離 (フレーム数)
@@ -396,10 +411,14 @@ pub struct EncoderConfig {
     /// 最大ビットレート (bps 単位、Capped CRF 用)
     pub max_bit_rate: Option<usize>,
 
-    /// スクリーンコンテンツモード (0=無効, 1=検出, 2=強制, 3=拡張検出)
+    /// スクリーンコンテンツモード (0-3)
+    ///
+    /// 0=None, 1=Block Copy + Palette, 2=content adaptive, 3=content adaptive (anti-alias aware)
     pub screen_content_mode: Option<u8>,
 
     /// イントラリフレッシュタイプ
+    ///
+    /// [`IntraRefreshType::FwdkfRefresh`] は CBR とは組み合わせられない
     pub intra_refresh_type: Option<IntraRefreshType>,
 
     /// RTC (Real-Time Coding) モード
@@ -411,7 +430,9 @@ pub struct EncoderConfig {
     /// S-frame の挿入間隔 (フレーム数)
     pub sframe_dist: Option<i32>,
 
-    /// S-frame の挿入モード (1=STRICT, 2=NEAREST)
+    /// S-frame の挿入モード (1-4)
+    ///
+    /// 1=STRICT, 2=NEAREST, 3=FLEXIBLE (ミニゴップ調整), 4=DEC_POSI (デコード順で位置調整)
     pub sframe_mode: Option<u32>,
 
     /// スーパーレゾリューションモード (0=無効, 1=固定, 2=ランダム, 3=QThreshold, 4=自動)
@@ -459,7 +480,9 @@ pub struct EncoderConfig {
     /// 最大ビットレートに対するオーバーシュート許容割合
     pub mbr_over_shoot_pct: Option<u32>,
 
-    /// リコードループ制御 (0=無効, 1=キーフレームのみ, 2=全フレーム)
+    /// リコードループ制御 (0-4)
+    ///
+    /// 0=無効, 1=KF+最大帯域超過, 2=KF/ARF/GF のみ, 3=全フレーム (ビットレート制約に基づく), 4=プリセット依存
     pub recode_loop: Option<u32>,
 
     /// リサイズモード (0=無効, 1=固定, 2=ランダム, 3=動的)
@@ -492,7 +515,9 @@ pub struct EncoderConfig {
     /// デブロッキングループフィルター (0=無効, 1=有効, 2=高精度)
     pub enable_dlf_flag: Option<u8>,
 
-    /// CDEF レベル (-1=自動, 0=無効, 1-5=レベル)
+    /// CDEF レベル (-1=自動, 0=無効, 1-4=レベル)
+    ///
+    /// -1 未満と 5 以上は SVT-AV1 がエラーを返す
     pub cdef_level: Option<i32>,
 
     /// リストレーションフィルタリング (-1=自動, 0=無効, 1=有効)
@@ -659,8 +684,11 @@ pub struct Encoder {
     frame_count: u64,
     received_count: u64,
     width: usize,
+    height: usize,
     color_format: ColorFormat,
     eos: bool,
+    // 早期リターンの有効条件の判定に使用する (CBR のみで有効)
+    rate_control_mode: RcMode,
 }
 
 impl Encoder {
@@ -745,6 +773,15 @@ impl Encoder {
         }
         if config.rate_control_mode == RcMode::CqpOrCrf && config.target_bit_rate > 0 {
             bad("EncoderConfig: target_bit_rate must be 0 for CRF mode")?;
+        }
+        // FwdkfRefresh は hierarchical_levels が 4 に強制される (enc_handle.c の設定処理) ため、
+        // LOW_DELAY (CBR) ではパケット生成が入力フレーム数に追いつかず、
+        // svt_av1_enc_get_packet が永久ブロックする。
+        // next_frame() の早期リターン前提 (CBR では出力数 == 入力数) が破れるため禁止する
+        if config.rate_control_mode == RcMode::Cbr
+            && config.intra_refresh_type == Some(IntraRefreshType::FwdkfRefresh)
+        {
+            bad("EncoderConfig: FwdkfRefresh cannot be used with CBR")?;
         }
 
         // FFI へ渡す際の縮小キャストで切り捨て・符号反転が起きないことを検証する
@@ -1331,8 +1368,10 @@ impl Encoder {
                 frame_count: 0,
                 received_count: 0,
                 width: config.width,
+                height: config.height,
                 color_format: config.color_format,
                 eos: false,
+                rate_control_mode: config.rate_control_mode,
             })
         }
     }
@@ -1346,9 +1385,18 @@ impl Encoder {
     ///
     /// エンコード結果は [`Encoder::next_frame()`] で取得できる
     ///
+    /// 各プレーンの長さは、[`FrameData`] の doc に示すプレーンサイズと一致させること。
+    /// 一致しない場合はエラーを返す
+    ///
     /// なお Y プレーンのストライドは入力フレームの幅と等しいことが前提
     ///
     /// また B フレームは扱わない前提（つまり入力フレームと出力フレームの順番が一致する）
+    ///
+    /// VBR / CRF の既定構成 (overlay なし) では、[`Encoder::finish()`] を呼ぶまで
+    /// エンコード済みパケットが得られないことがある
+    /// (RANDOM_ACCESS ではルックアヘッドによりパケット生成が遅延するため)。
+    /// CBR では (VBR と同様に) enable_overlays が強制無効になり ARF / overlay が生成されないため、
+    /// エンコードしたフレーム数分のパケットが順次得られる
     pub fn encode(&mut self, frame: &FrameData<'_>, options: &EncodeOptions) -> Result<(), Error> {
         // EOS 送信済みの場合は追加フレームを受け付けない
         if self.eos {
@@ -1375,16 +1423,47 @@ impl Encoder {
             FrameData::I420 { y, u, v } | FrameData::I42010 { y, u, v } => (*y, *u, *v),
         };
 
-        let total_len = y
-            .len()
-            .checked_add(u.len())
-            .and_then(|s| s.checked_add(v.len()));
-        if total_len != Some(self.input_yuv.len()) {
-            Error::check(
-                sys::EbErrorType_EB_ErrorBadParameter,
-                "shiguredo_svt_av1::Encoder::encode",
-            )?;
-        }
+        // 各プレーンの長さが、EncoderConfig の width / height / color_format から
+        // 計算されるプレーンサイズと一致していることを検証する。
+        // 合計長だけの検証ではプレーン境界のずれを検出できないため、個別に比較する。
+        // validate_config で width / height / color_format の検証を済ませているため
+        // ここで None が返ることはない想定だが、防御としてエラーにする
+        // (with_log_level 側では検証済みのため unwrap しているが、ここでは防御を優先する)
+        let Some((y_size, u_size, v_size)) =
+            Self::plane_sizes(self.width, self.height, self.color_format)
+        else {
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::encode (plane size overflow)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
+        };
+        let check_plane_size =
+            |len: usize, expected: usize, function: &'static str| -> Result<(), Error> {
+                if len == expected {
+                    Ok(())
+                } else {
+                    Err(Error {
+                        function,
+                        code: sys::EbErrorType_EB_ErrorBadParameter,
+                    })
+                }
+            };
+        // 不正なプレーン (Y / U / V) をエラー表示で特定できるようにする
+        check_plane_size(
+            y.len(),
+            y_size,
+            "shiguredo_svt_av1::Encoder::encode (Y plane size mismatch)",
+        )?;
+        check_plane_size(
+            u.len(),
+            u_size,
+            "shiguredo_svt_av1::Encoder::encode (U plane size mismatch)",
+        )?;
+        check_plane_size(
+            v.len(),
+            v_size,
+            "shiguredo_svt_av1::Encoder::encode (V plane size mismatch)",
+        )?;
 
         self.input_yuv[..y.len()].copy_from_slice(y);
         self.input_yuv[y.len()..][..u.len()].copy_from_slice(u);
@@ -1442,39 +1521,67 @@ impl Encoder {
     /// エンコード済みのフレームを取り出す
     ///
     /// [`Encoder::encode()`] や [`Encoder::finish()`] の後には、
-    /// このメソッドを、結果が `None` になるまで呼び出し続ける必要がある
-    pub fn next_frame(&mut self) -> Option<EncodedFrame<'_>> {
-        // EOS 送信前に全フレーム受信済みの場合は API を呼ばずに None を返す。
+    /// このメソッドを、結果が `Ok(None)` になるまで呼び出し続ける必要がある
+    ///
+    /// エンコードエラーが発生した場合や、成功コードで null の出力が返った場合は
+    /// `Err` を返す
+    ///
+    /// VBR / CRF の既定構成 (overlay なし) では、[`Encoder::finish()`] を呼ぶまで
+    /// エンコード済みパケットが得られないことがある
+    /// (RANDOM_ACCESS ではルックアヘッドによりパケット生成が遅延するため)。
+    /// CBR では (VBR と同様に) enable_overlays が強制無効になり ARF / overlay が生成されないため、
+    /// エンコードしたフレーム数分のパケットが順次得られる
+    pub fn next_frame(&mut self) -> Result<Option<EncodedFrame<'_>>, Error> {
+        // EOS 送信前に全フレーム受信済みの場合は API を呼ばずに Ok(None) を返す。
         // SVT-AV1 の低遅延モード (CBR) では svt_av1_enc_get_packet が
         // pic_send_done=0 でもブロックするため、この早期リターンが必要。
-        if !self.eos && self.received_count >= self.frame_count {
-            return None;
+        // 早期リターンは出力パケット数 == 入力フレーム数 を前提とするが、
+        // これは ARF / overlay パケットを出力しない LOW_DELAY (CBR) でのみ成立する
+        if !self.eos
+            && self.rate_control_mode == RcMode::Cbr
+            && self.received_count >= self.frame_count
+        {
+            return Ok(None);
         }
 
         let mut output = std::ptr::null_mut();
         let pic_send_done = self.eos as u8;
         let code =
             unsafe { sys::svt_av1_enc_get_packet(self.handle.inner, &mut output, pic_send_done) };
-        if code == sys::EbErrorType_EB_NoErrorEmptyQueue {
-            return None;
+        // パケットがまだ無い状態は正常な待機状態であり、エラーではない
+        // (EB_NoErrorFifoShutdown は v4.2.0 では戻り値に現れないが、正常系として扱う)
+        if code == sys::EbErrorType_EB_NoErrorEmptyQueue
+            || code == sys::EbErrorType_EB_NoErrorFifoShutdown
+        {
+            return Ok(None);
         }
         if code != sys::EbErrorType_EB_ErrorNone {
-            log::error!("svt_av1_enc_get_packet() failed: code={code}");
-            return None;
+            // エンコードエラーは握りつぶさず呼び出し元に伝播する。
+            // SVT-AV1 はエラー時も *p_buffer にエラーパケットをセットするため、
+            // バッファプールへ返却してから Err を返す
+            if !output.is_null() {
+                unsafe { sys::svt_av1_enc_release_out_buffer(&mut output) };
+            }
+            return Err(Error {
+                function: "svt_av1_enc_get_packet",
+                code,
+            });
         }
 
         // FFI 境界の防御: 成功コードでも null が返った場合に備える
         if output.is_null() {
-            log::error!("svt_av1_enc_get_packet() returned success but output is null");
-            return None;
+            return Err(Error {
+                function: "shiguredo_svt_av1::Encoder::next_frame (null output)",
+                code: sys::EbErrorType_EB_ErrorBadParameter,
+            });
         }
 
         let frame = unsafe { EncodedFrame(&mut *output) };
         if (frame.0.flags & sys::EB_BUFFERFLAG_EOS) != 0 {
-            None
+            Ok(None)
         } else {
             self.received_count += 1;
-            Some(frame)
+            Ok(Some(frame))
         }
     }
 
@@ -1534,11 +1641,19 @@ impl EncodedFrame<'_> {
     }
 
     /// キーフレームかどうか
+    ///
+    /// SVT-AV1 が出力するピクチャタイプ (`EbAv1PictureType`) のうち、
+    /// キーフレームに相当するものを判定対象とする。
+    /// 判定対象はキーフレーム (`EB_AV1_KEY_PICTURE`)、イントラオンリー
+    /// (`EB_AV1_INTRA_ONLY_PICTURE`)、 Forward Key (`EB_AV1_FW_KEY_PICTURE`) の 3 つ。
+    /// SVT-AV1 v4.2.0 では Forward Key はエンコード出力に現れないが、将来
+    /// 出力されるようになった場合に備えて判定対象に含めている。
     pub fn is_keyframe(&self) -> bool {
         matches!(
             self.0.pic_type,
             sys::EbAv1PictureType_EB_AV1_KEY_PICTURE
                 | sys::EbAv1PictureType_EB_AV1_INTRA_ONLY_PICTURE
+                | sys::EbAv1PictureType_EB_AV1_FW_KEY_PICTURE
         )
     }
 
@@ -1626,6 +1741,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cbr_fwdkf_refresh_rejected() {
+        // CBR と FwdkfRefresh の組み合わせは LOW_DELAY でパケット生成が
+        // 入力フレーム数に追いつかず next_frame() が永久ブロックするため、
+        // Encoder::new でエラーを返す
+        let mut config = encoder_config();
+        config.rate_control_mode = RcMode::Cbr;
+        config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
+        let err = Encoder::with_log_level(&config, "0").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("FwdkfRefresh cannot be used with CBR")
+        );
+    }
+
+    #[test]
     fn init_encoder() {
         // OK
         let config = encoder_config();
@@ -1642,7 +1772,7 @@ mod tests {
         let config = encoder_config();
         let width = config.width;
         let height = config.height;
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
         let mut encoded_count = 0;
 
         let size = width * height;
@@ -1656,20 +1786,32 @@ mod tests {
         };
         let options = EncodeOptions::default();
 
-        encoder.encode(&frame, &options).expect("failed to encode");
-        while encoder.next_frame().is_some() {
+        encoder.encode(&frame, &options).expect("エンコードに失敗");
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
 
         // 一フレームだけ処理すると SVT-AV1 が `--avif 1` を使うようにエラーログを出すので
         // それを防止するために二フレーム目も与えている
-        encoder.encode(&frame, &options).expect("failed to encode");
-        while encoder.next_frame().is_some() {
+        encoder.encode(&frame, &options).expect("エンコードに失敗");
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
 
-        encoder.finish().expect("failed to finish");
-        while encoder.next_frame().is_some() {
+        encoder.finish().expect("finish の呼び出しに失敗");
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             encoded_count += 1;
         }
 
@@ -1682,7 +1824,7 @@ mod tests {
         config.target_bit_rate = 1_000_000;
         config.fps_numerator = 1;
         config.fps_denominator = 1;
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let size = 320 * 320;
         // 10-bit: 各ピクセル 2 バイト
@@ -1697,14 +1839,18 @@ mod tests {
 
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
+            .expect("エンコードに失敗");
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
+            .expect("エンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
 
         let mut count = 0;
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             count += 1;
         }
         assert_eq!(count, 2);
@@ -1714,7 +1860,7 @@ mod tests {
     fn encode_cbr() {
         let mut config = encoder_config();
         config.rate_control_mode = RcMode::Cbr;
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
         let u = vec![0u8; 160 * 160];
@@ -1725,16 +1871,29 @@ mod tests {
             v: &v,
         };
 
-        encoder
-            .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder
-            .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
-
+        // CBR (LOW_DELAY) ではフレームごとにパケットが順次得られる。
+        // encode 直後の drain は早期リターン経路 (received_count >= frame_count) を踏む。
+        // 早期リターンが削除された場合は svt_av1_enc_get_packet がブロックして
+        // テストがハングするため、このテストは早期リターンの回帰ガードを兼ねる
         let mut count = 0;
-        while encoder.next_frame().is_some() {
+        for _ in 0..2 {
+            encoder
+                .encode(&frame, &EncodeOptions::default())
+                .expect("エンコードに失敗");
+            while encoder
+                .next_frame()
+                .expect("next_frame の呼び出しに失敗")
+                .is_some()
+            {
+                count += 1;
+            }
+        }
+        encoder.finish().expect("finish の呼び出しに失敗");
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             count += 1;
         }
         assert_eq!(count, 2);
@@ -1749,7 +1908,7 @@ mod tests {
         config.rate_control_mode = RcMode::CqpOrCrf;
         config.target_bit_rate = 0;
         config.qp = Some(35);
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
         let u = vec![0u8; 160 * 160];
@@ -1762,14 +1921,18 @@ mod tests {
 
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
+            .expect("エンコードに失敗");
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
+            .expect("エンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
 
         let mut count = 0;
-        while encoder.next_frame().is_some() {
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
             count += 1;
         }
         assert_eq!(count, 2);
@@ -1779,7 +1942,7 @@ mod tests {
     fn color_format_mismatch() {
         // I420 エンコーダーに I42010 データを渡すとエラーになる
         let config = encoder_config();
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320 * 2];
         let u = vec![0u8; 160 * 160 * 2];
@@ -1793,9 +1956,266 @@ mod tests {
     }
 
     #[test]
+    fn plane_size_mismatch_y() {
+        // 合計長は一致するが Y プレーンの長さだけが不正なフレームを渡すとエラーになる
+        // (320x240 I420: y=76800, u=v=19200 に対して y を 4 バイト短く、u/v を 2 バイトずつ長くする)
+        assert_plane_size_mismatch(
+            ColorFormat::I420,
+            320 * 240 - 4,
+            160 * 120 + 2,
+            160 * 120 + 2,
+            "Y plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_u() {
+        // 合計長は一致するが U プレーンの長さだけが不正なフレームを渡すとエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I420,
+            320 * 240,
+            160 * 120 + 2,
+            160 * 120 - 2,
+            "U plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_v() {
+        // V プレーンの長さだけが不正なフレームを渡すとエラーになる
+        // (V のみをずらすと合計長も一致しないが、Y / U が正しければ V の検証に到達する)
+        assert_plane_size_mismatch(
+            ColorFormat::I420,
+            320 * 240,
+            160 * 120,
+            160 * 120 - 4,
+            "V plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_10bit_y() {
+        // I42010 でも合計長は一致するが Y プレーンの長さだけが不正なフレームはエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I42010,
+            320 * 240 * 2 - 4,
+            160 * 120 * 2 + 2,
+            160 * 120 * 2 + 2,
+            "Y plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_10bit_u() {
+        // I42010 でも合計長は一致するが U プレーンの長さだけが不正なフレームはエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I42010,
+            320 * 240 * 2,
+            160 * 120 * 2 + 2,
+            160 * 120 * 2 - 2,
+            "U plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn plane_size_mismatch_10bit_v() {
+        // I42010 でも V プレーンの長さだけが不正なフレームはエラーになる
+        assert_plane_size_mismatch(
+            ColorFormat::I42010,
+            320 * 240 * 2,
+            160 * 120 * 2,
+            160 * 120 * 2 - 4,
+            "V plane size mismatch",
+        );
+    }
+
+    #[test]
+    fn encode_after_plane_size_mismatch() {
+        // プレーン長の不正でエラーになった後でも、正常なフレームでエンコードを継続できる
+        let mut encoder = Encoder::new(EncoderConfig::new(320, 240, ColorFormat::I420))
+            .expect("エンコーダーの生成に失敗");
+
+        // 不正なプレーン長のフレームを渡すとエラーになる
+        let bad_y = vec![0u8; 320 * 240 - 4];
+        let bad_u = vec![0u8; 160 * 120 + 2];
+        let bad_v = vec![0u8; 160 * 120 + 2];
+        let bad_frame = FrameData::I420 {
+            y: &bad_y,
+            u: &bad_u,
+            v: &bad_v,
+        };
+        assert!(
+            encoder
+                .encode(&bad_frame, &EncodeOptions::default())
+                .is_err()
+        );
+
+        // その後、正常なフレームはエンコードできる
+        // (一フレームだけ処理すると SVT-AV1 が `--avif 1` を使うようにエラーログを出すので
+        // 二フレーム目も与えている)
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+        encoder
+            .encode(&frame, &options)
+            .expect("正常なフレームのエンコードに失敗");
+        encoder
+            .encode(&frame, &options)
+            .expect("正常なフレームのエンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        // 不正フレームでは frame_count が進まないため、正常フレーム 2 枚がそのまま出力される
+        let mut encoded_count = 0;
+        while encoder
+            .next_frame()
+            .expect("next_frame の呼び出しに失敗")
+            .is_some()
+        {
+            encoded_count += 1;
+        }
+        assert_eq!(encoded_count, 2);
+    }
+
+    #[test]
+    fn is_keyframe_fwdkf_refresh() {
+        // FwdkfRefresh 構成では keyint (intra_period_length + 1) の周期で
+        // キーフレーム (CRA) が出力され、そのすべてで is_keyframe() が true を返す
+        let mut config = EncoderConfig::new(320, 240, ColorFormat::I420);
+        config.rate_control_mode = RcMode::CqpOrCrf;
+        config.target_bit_rate = 0;
+        config.qp = Some(35);
+        config.enc_mode = 13;
+        // fps は GOP 構造に影響するため明示する
+        config.fps_numerator = 30;
+        config.fps_denominator = 1;
+        // 意図しないシーンチェンジ検出による追加キーフレームを避ける
+        config.scene_change_detection = false;
+        config.intra_refresh_type = Some(IntraRefreshType::FwdkfRefresh);
+        // FwdkfRefresh は hierarchical_levels が 4 に強制される (enc_handle.c の設定処理)。
+        // したがって mini-gop サイズは 16 になり、keyint が mini-gop サイズの倍数になるよう
+        // 31 を選ぶ (keyint = 32)。倍数にしておくと周期キーフレームの出力位置が
+        // mini-gop 境界に揃う
+        config.intra_period_length = NonZeroUsize::new(31);
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+
+        // keyint (32) の 2 倍のフレームをエンコードする
+        // (フレーム数が不足すると周期キーフレームが出力されず、テストが黙ってパスする)
+        for _ in 0..64 {
+            encoder
+                .encode(&frame, &options)
+                .expect("フレームのエンコードに失敗");
+        }
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        let mut keyframes = Vec::new();
+        let mut inter_count = 0;
+        while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
+            if frame.is_keyframe() {
+                keyframes.push((frame.pts(), frame.pic_type()));
+            } else {
+                inter_count += 1;
+            }
+        }
+
+        // 先頭 (pts=0) と keyint 周期 (pts=32) にキーフレームが出力される。
+        // キーフレームのピクチャタイプは v4.2.0 では Key / IntraOnly として出力される
+        // (Forward Key は出力されない。将来出力されるようになった場合はこの断言を更新する)。
+        // 周期キーフレーム (CRA) が IntraOnly であることは、FwdkfRefresh が実際に
+        // 適用されていることの確認になる
+        assert_eq!(
+            keyframes,
+            vec![(0, PictureType::Key), (32, PictureType::IntraOnly)]
+        );
+        // インターフレームが出力され、is_keyframe() が false を返すことを確認する
+        assert!(inter_count > 0);
+    }
+
+    #[test]
+    fn is_keyframe_forward_key() {
+        // EB_AV1_FW_KEY_PICTURE が is_keyframe() で true と判定されることを確認する
+        // (v4.2.0 では Forward Key はエンコード出力に現れないため、ヘッダを直接構築して検証する)
+        let mut header = unsafe { std::mem::zeroed::<sys::EbBufferHeaderType>() };
+        header.pic_type = sys::EbAv1PictureType_EB_AV1_FW_KEY_PICTURE;
+        let frame = EncodedFrame(&mut header);
+        assert!(frame.is_keyframe());
+        assert_eq!(frame.pic_type(), PictureType::ForwardKey);
+        // Drop で svt_av1_enc_release_out_buffer が呼ばれるのを防ぐため forget する
+        // (is_keyframe() / pic_type() は pic_type フィールドしか読まないためゼロ初期化で安全)
+        std::mem::forget(frame);
+    }
+
+    #[test]
+    fn is_keyframe_key_picture() {
+        // 閉じた GOP 構成 (KfRefresh) の先頭フレームは KEY_PICTURE として出力され、
+        // is_keyframe() が true を返す (KEY_PICTURE 分岐の検証)
+        let mut config = EncoderConfig::new(320, 240, ColorFormat::I420);
+        config.rate_control_mode = RcMode::CqpOrCrf;
+        config.target_bit_rate = 0;
+        config.qp = Some(35);
+        config.enc_mode = 13;
+        config.fps_numerator = 30;
+        config.fps_denominator = 1;
+        config.intra_refresh_type = Some(IntraRefreshType::KfRefresh);
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; 320 * 240];
+        let u = vec![0u8; 160 * 120];
+        let v = vec![0u8; 160 * 120];
+        let frame = FrameData::I420 {
+            y: &y,
+            u: &u,
+            v: &v,
+        };
+        let options = EncodeOptions::default();
+        encoder
+            .encode(&frame, &options)
+            .expect("フレームのエンコードに失敗");
+        encoder
+            .encode(&frame, &options)
+            .expect("フレームのエンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
+
+        // 先頭フレームは KEY として出力され、is_keyframe() が true を返す
+        {
+            let first = encoder
+                .next_frame()
+                .expect("next_frame の呼び出しに失敗")
+                .expect("先頭フレームが出力されない");
+            assert_eq!(first.pic_type(), PictureType::Key);
+            assert!(first.is_keyframe());
+        }
+
+        // 後続のフレームでは is_keyframe() が false を返す
+        let mut inter_count = 0;
+        while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
+            assert!(!frame.is_keyframe());
+            inter_count += 1;
+        }
+        // 後続のフレームが少なくとも 1 つ出力されることを確認する
+        // (出力が先頭フレームだけだとテストが黙ってパスするため)
+        assert!(inter_count > 0);
+    }
+
+    #[test]
     fn encoded_frame_has_data() {
         let config = encoder_config();
-        let mut encoder = Encoder::new(config).expect("failed to create");
+        let mut encoder = Encoder::new(config).expect("エンコーダーの生成に失敗");
 
         let y = vec![0u8; 320 * 320];
         let u = vec![0u8; 160 * 160];
@@ -1808,15 +2228,29 @@ mod tests {
 
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
+            .expect("エンコードに失敗");
         encoder
             .encode(&frame, &EncodeOptions::default())
-            .expect("failed to encode");
-        encoder.finish().expect("failed to finish");
+            .expect("エンコードに失敗");
+        encoder.finish().expect("finish の呼び出しに失敗");
 
-        while let Some(frame) = encoder.next_frame() {
+        while let Some(frame) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
             assert!(!frame.data().is_empty());
         }
+    }
+
+    #[test]
+    fn plane_sizes_odd_dimensions() {
+        // 奇数寸法では U / V プレーンの寸法が ceil(width/2) x ceil(height/2) になる
+        // (FrameData の doc に明記した契約。321.div_ceil(2) = 161、241.div_ceil(2) = 121)
+        assert_eq!(
+            Encoder::plane_sizes(321, 241, ColorFormat::I420),
+            Some((321 * 241, 161 * 121, 161 * 121))
+        );
+        assert_eq!(
+            Encoder::plane_sizes(321, 241, ColorFormat::I42010),
+            Some((321 * 241 * 2, 161 * 121 * 2, 161 * 121 * 2))
+        );
     }
 
     fn encoder_config() -> EncoderConfig {
@@ -1825,5 +2259,39 @@ mod tests {
         config.fps_numerator = 1;
         config.fps_denominator = 1;
         config
+    }
+
+    // 不正なプレーン長のフレームを渡すとエラーになり、エラー表示に不正なプレーン名が
+    // 含まれることを確認する
+    fn assert_plane_size_mismatch(
+        color_format: ColorFormat,
+        y_len: usize,
+        u_len: usize,
+        v_len: usize,
+        expected_message: &str,
+    ) {
+        let mut encoder = Encoder::new(EncoderConfig::new(320, 240, color_format))
+            .expect("エンコーダーの生成に失敗");
+
+        let y = vec![0u8; y_len];
+        let u = vec![0u8; u_len];
+        let v = vec![0u8; v_len];
+        let frame = match color_format {
+            ColorFormat::I420 => FrameData::I420 {
+                y: &y,
+                u: &u,
+                v: &v,
+            },
+            ColorFormat::I42010 => FrameData::I42010 {
+                y: &y,
+                u: &u,
+                v: &v,
+            },
+        };
+
+        let err = encoder
+            .encode(&frame, &EncodeOptions::default())
+            .unwrap_err();
+        assert!(err.to_string().contains(expected_message));
     }
 }

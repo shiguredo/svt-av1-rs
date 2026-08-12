@@ -9,9 +9,43 @@
 - FIX
   - バグ修正
 
-## develop
+## 2026.2.0
+
+**リリース日**: 2026-08-12
+
+- [CHANGE] MSRV (rust-version) を 1.93 に上げる
+  - @voluntas
+- [CHANGE] `Encoder::next_frame()` の戻り値を `Option<EncodedFrame>` から `Result<Option<EncodedFrame>, Error>` に変更する
+  - @voluntas
+- [CHANGE] CBR と FwdkfRefresh の組み合わせを禁止する
+  - @voluntas
+- [ADD] Ubuntu 26.04 x86_64 / arm64 向けの prebuilt バイナリを追加する
+  - @voluntas
+- [ADD] `EncodedFrame::is_keyframe()` の判定対象に Forward Key を追加する
+  - @voluntas
+- [UPDATE] SVT-AV1 を v4.1.0 から v4.2.0 に更新する
+  - @voluntas
+- [FIX] `Encoder::encode()` がプレーンサイズの不正を検出しない問題を修正する
+  - @voluntas
+- [FIX] `DOCS_RS=1` を設定した状態でビルドした後に通常ビルドが失敗する問題を修正する
+  - @voluntas
 
 ### misc
+
+- [UPDATE] Cargo.toml のフィールド順とセクション順を整理する
+  - @voluntas
+- [UPDATE] `shiguredo_aom` を 2026.2.0-canary.6 に更新する
+  - @voluntas
+- [UPDATE] `shiguredo_dav1d` を 2026.2 に更新する
+  - @voluntas
+- [UPDATE] `EncoderConfig` の doc コメントを SVT-AV1 v4.2.0 の一次資料と一致するように修正する
+  - @voluntas
+- [UPDATE] テストの assert / expect メッセージを日本語に統一する
+  - @voluntas
+- [UPDATE] 依存ライブラリに用途コメントを追加する
+  - @voluntas
+- [UPDATE] CI とローカルの検査設定をプロジェクト規約に合わせて整備する
+  - @voluntas
 
 ## 2026.1.0
 

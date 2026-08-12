@@ -117,8 +117,8 @@ fn psnr_y(original: &[u8], decoded: &[u8], width: usize, height: usize) -> f64 {
 fn extract_y_plane(frame: &shiguredo_aom::DecodedFrame<'_>) -> Vec<u8> {
     let width = frame.width();
     let height = frame.height();
-    let stride = frame.y_stride();
-    let y_data = frame.y_plane();
+    let stride = frame.y_stride().expect("y_stride の取得に失敗");
+    let y_data = frame.y_plane().expect("y_plane の取得に失敗");
     let mut y = Vec::with_capacity(width * height);
     for row in 0..height {
         y.extend_from_slice(&y_data[row * stride..row * stride + width]);
@@ -128,17 +128,17 @@ fn extract_y_plane(frame: &shiguredo_aom::DecodedFrame<'_>) -> Vec<u8> {
 
 /// aom でデコードして (Y プレーン, 幅, 高さ) の一覧を返す
 fn decode_with_aom(packets: &[Vec<u8>]) -> Vec<(Vec<u8>, usize, usize)> {
-    let mut decoder = Decoder::new(DecoderConfig::default()).expect("failed to create aom decoder");
+    let mut decoder = Decoder::new(DecoderConfig::default()).expect("aom デコーダーの生成に失敗");
     let mut decoded = Vec::new();
 
     for packet in packets {
-        decoder.decode(packet).expect("failed to decode");
+        decoder.decode(packet).expect("デコードに失敗");
         while let Some(frame) = decoder.next_frame() {
             decoded.push((extract_y_plane(&frame), frame.width(), frame.height()));
         }
     }
 
-    decoder.finish().expect("failed to finish");
+    decoder.finish().expect("finish の呼び出しに失敗");
     while let Some(frame) = decoder.next_frame() {
         decoded.push((extract_y_plane(&frame), frame.width(), frame.height()));
     }
@@ -156,7 +156,7 @@ fn encode_with_svt_av1(
     frames: &[(Vec<u8>, Vec<u8>, Vec<u8>)],
 ) -> Vec<Vec<u8>> {
     let mut encoder =
-        shiguredo_svt_av1::Encoder::new(config).expect("failed to create svt-av1 encoder");
+        shiguredo_svt_av1::Encoder::new(config).expect("svt-av1 エンコーダーの生成に失敗");
     let options = shiguredo_svt_av1::EncodeOptions {
         force_keyframe: false,
     };
@@ -164,14 +164,15 @@ fn encode_with_svt_av1(
 
     for (y, u, v) in frames {
         let frame = shiguredo_svt_av1::FrameData::I420 { y, u, v };
-        encoder.encode(&frame, &options).expect("failed to encode");
-        while let Some(encoded) = encoder.next_frame() {
+        encoder.encode(&frame, &options).expect("エンコードに失敗");
+        while let Some(encoded) = encoder.next_frame().expect("next_frame の呼び出しに失敗")
+        {
             packets.push(encoded.data().to_vec());
         }
     }
 
-    encoder.finish().expect("failed to finish");
-    while let Some(encoded) = encoder.next_frame() {
+    encoder.finish().expect("finish の呼び出しに失敗");
+    while let Some(encoded) = encoder.next_frame().expect("next_frame の呼び出しに失敗") {
         packets.push(encoded.data().to_vec());
     }
 
@@ -193,23 +194,23 @@ fn roundtrip_colorbar(
         .collect();
 
     let packets = encode_with_svt_av1(config, &input_frames);
-    assert!(!packets.is_empty(), "no encoded packets");
+    assert!(!packets.is_empty(), "エンコードされたパケットがない");
 
     let decoded_frames = decode_with_aom(&packets);
     assert_eq!(
         decoded_frames.len(),
         num_frames,
-        "decoded {} frames, expected {num_frames}",
+        "デコード結果が {} フレーム (期待値 {num_frames})",
         decoded_frames.len()
     );
 
     for (i, (decoded_y, w, h)) in decoded_frames.iter().enumerate() {
-        assert_eq!(*w, width, "frame {i}: width mismatch");
-        assert_eq!(*h, height, "frame {i}: height mismatch");
+        assert_eq!(*w, width, "フレーム {i}: 幅が一致しない");
+        assert_eq!(*h, height, "フレーム {i}: 高さが一致しない");
         let psnr = psnr_y(&y, decoded_y, width, height);
         assert!(
             psnr >= min_psnr_db,
-            "frame {i}: PSNR {psnr:.1} dB < {min_psnr_db} dB"
+            "フレーム {i}: PSNR {psnr:.1} dB が {min_psnr_db} dB 未満"
         );
     }
 }
@@ -238,14 +239,14 @@ fn test_roundtrip_svt_av1_aom_dummy_frames() {
         .collect();
 
     let packets = encode_with_svt_av1(config, &input_frames);
-    assert!(!packets.is_empty(), "no encoded packets");
+    assert!(!packets.is_empty(), "エンコードされたパケットがない");
 
     let decoded_frames = decode_with_aom(&packets);
     assert_eq!(decoded_frames.len(), num_frames);
     for (i, (y, w, h)) in decoded_frames.iter().enumerate() {
-        assert_eq!(*w, width, "frame {i}: width mismatch");
-        assert_eq!(*h, height, "frame {i}: height mismatch");
-        assert!(!y.is_empty(), "frame {i}: empty Y plane");
+        assert_eq!(*w, width, "フレーム {i}: 幅が一致しない");
+        assert_eq!(*h, height, "フレーム {i}: 高さが一致しない");
+        assert!(!y.is_empty(), "フレーム {i}: Y プレーンが空");
     }
 }
 
@@ -269,6 +270,10 @@ fn test_psnr_svt_av1_aom_vbr() {
 }
 
 /// SVT-AV1 CBR カラーバーの PSNR 検証
+///
+/// encode 直後の drain が CBR (LOW_DELAY) の早期リターン経路を踏む。
+/// 早期リターンが削除された場合は svt_av1_enc_get_packet がブロックして
+/// テストがハングするため、このテストは早期リターンの回帰ガードを兼ねる
 #[test]
 fn test_psnr_svt_av1_aom_cbr() {
     let mut config =

@@ -46,6 +46,8 @@ Please read <https://github.com/shiguredo/oss> before use.
 
 ## 動作要件
 
+- Ubuntu 26.04 x86_64
+- Ubuntu 26.04 arm64
 - Ubuntu 24.04 x86_64
 - Ubuntu 24.04 arm64
 - Ubuntu 22.04 x86_64
@@ -96,6 +98,8 @@ SVT-AV1 がない環境では、docs.rs 向けのドキュメント生成のみ�
 DOCS_RS=1 cargo doc --no-deps
 ```
 
+`DOCS_RS` を設定してビルドした後、解除すれば通常のビルドに戻れます。解除後の最初のビルドでは prebuilt バイナリの再ダウンロードが発生するため、ネットワーク接続が必要です。`DOCS_RS=1` のままコンパイルを伴うコマンド (`cargo build` / `cargo test` など) を実行しないでください (ダミーバインディングのためコンパイルエラーになります)。
+
 ## 使い方
 
 ### エンコード
@@ -130,7 +134,7 @@ encoder.encode(&frame, &EncodeOptions::default())?;
 encoder.encode(&frame, &EncodeOptions { force_keyframe: true })?;
 
 // エンコード済みフレームを取得
-while let Some(frame) = encoder.next_frame() {
+while let Some(frame) = encoder.next_frame()? {
     let data = frame.data();
     let is_key = frame.is_keyframe();
     println!("encoded: {} bytes, keyframe: {}", data.len(), is_key);
@@ -138,7 +142,7 @@ while let Some(frame) = encoder.next_frame() {
 
 // 残りのフレームをフラッシュ
 encoder.finish()?;
-while let Some(frame) = encoder.next_frame() {
+while let Some(frame) = encoder.next_frame()? {
     // ...
 }
 ```
@@ -198,7 +202,7 @@ while let Some(frame) = encoder.next_frame() {
 | `under_shoot_pct` | `Option<u32>` | アンダーシュート許容割合 |
 | `over_shoot_pct` | `Option<u32>` | オーバーシュート許容割合 |
 | `mbr_over_shoot_pct` | `Option<u32>` | 最大ビットレート オーバーシュート許容割合 |
-| `recode_loop` | `Option<u32>` | リコードループ (0=無効, 1=キーフレームのみ, 2=全フレーム) |
+| `recode_loop` | `Option<u32>` | リコードループ (0=無効, 1=KF+最大帯域超過, 2=KF/ARF/GF のみ, 3=全フレーム (ビットレート制約に基づく), 4=プリセット依存) |
 | `starting_buffer_level_ms` | `Option<u64>` | CBR 初期バッファレベル (ms) |
 | `optimal_buffer_level_ms` | `Option<u64>` | CBR 目標バッファレベル (ms) |
 | `maximum_buffer_size_ms` | `Option<u64>` | CBR 最大バッファサイズ (ms) |
@@ -207,8 +211,8 @@ while let Some(frame) = encoder.next_frame() {
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `tile_columns` | `Option<NonZeroUsize>` | タイル列数 |
-| `tile_rows` | `Option<NonZeroUsize>` | タイル行数 |
+| `tile_columns` | `Option<NonZeroUsize>` | タイル列数の log2 値 (0=分割なし, 1=2 分割, 0-4)。`None` は分割なし |
+| `tile_rows` | `Option<NonZeroUsize>` | タイル行数の log2 値 (0=分割なし, 1=2 分割, 0-6)。`None` は分割なし |
 | `level_of_parallelism` | `Option<u32>` | 並列化レベル |
 
 #### カラー情報
@@ -243,7 +247,7 @@ while let Some(frame) = encoder.next_frame() {
 | フィールド | 型 | 説明 |
 |---|---|---|
 | `enable_dlf_flag` | `Option<u8>` | デブロッキングループフィルター (0=無効, 1=有効, 2=高精度) |
-| `cdef_level` | `Option<i32>` | CDEF レベル (-1=自動, 0=無効, 1-5=レベル) |
+| `cdef_level` | `Option<i32>` | CDEF レベル (-1=自動, 0=無効, 1-4=レベル) |
 | `enable_restoration_filtering` | `Option<i32>` | リストレーションフィルタリング (-1=自動, 0=無効, 1=有効) |
 | `enable_tf` | `Option<u8>` | テンポラルフィルター (0=無効, 1=有効, 2=適応的) |
 | `tf_strength` | `Option<u8>` | テンポラルフィルター強度 |
@@ -283,7 +287,7 @@ while let Some(frame) = encoder.next_frame() {
 | フィールド | 型 | 説明 |
 |---|---|---|
 | `sframe_dist` | `Option<i32>` | S-frame 挿入間隔 (フレーム数) |
-| `sframe_mode` | `Option<u32>` | S-frame 挿入モード (1=STRICT, 2=NEAREST) |
+| `sframe_mode` | `Option<u32>` | S-frame 挿入モード (1=STRICT, 2=NEAREST, 3=FLEXIBLE, 4=DEC_POSI) |
 | `sframe_qp` | `Option<u8>` | S-frame の QP 値 |
 | `sframe_qp_offset` | `Option<i8>` | S-frame の QP オフセット |
 
