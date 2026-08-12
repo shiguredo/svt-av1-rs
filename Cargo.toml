@@ -1,6 +1,6 @@
 [package]
 name = "shiguredo_svt_av1"
-version = "2026.2.0-canary.1"
+version = "2026.2.0"
 edition = "2024"
 rust-version = "1.93"
 description = "Rust bindings for SVT-AV1"
@@ -23,7 +23,7 @@ log = "0.4"
 
 [dev-dependencies]
 # PSNR テストで aom によるデコードに使用する
-shiguredo_aom = "2026.2.0-canary.5"
+shiguredo_aom = "2026.2.0-canary.6"
 # PSNR テストで dav1d によるデコードに使用する
 shiguredo_dav1d = "2026.2"
 
