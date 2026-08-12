@@ -23,7 +23,7 @@ log = "0.4"
 
 [dev-dependencies]
 # PSNR テストで aom によるデコードに使用する
-shiguredo_aom = "2026.2.0-canary.5"
+shiguredo_aom = "2026.2.0-canary.6"
 # PSNR テストで dav1d によるデコードに使用する
 shiguredo_dav1d = "2026.2"
 
