@@ -11,7 +11,7 @@ env:
 jobs:
   github-release:
     name: "Create GitHub Release"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       version: ${{ steps.get_version.outputs.VERSION }}
     steps:
@@ -73,12 +73,11 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
-
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential nasm
 
+      # ツールチェーンは rust-toolchain.toml で MSRV に固定している
       - name: Build with source-build
         run: cargo build --release --features source-build --message-format=json > build-output.json
 
@@ -117,17 +116,16 @@ jobs:
     needs: github-release
     permissions:
       contents: write
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 45
     steps:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
-
       - name: Install NASM
         run: choco install nasm -y
 
+      # ツールチェーンは rust-toolchain.toml で MSRV に固定している
       - name: Build with source-build
         run: cargo build --release --features source-build --message-format=json > build-output.json
 

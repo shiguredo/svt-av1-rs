@@ -9,6 +9,19 @@
 - FIX
   - バグ修正
 
+## develop
+
+### misc
+
+- [UPDATE] `rust-toolchain.toml` の channel を MSRV (1.93) に固定し、CI も同ツールチェーンで実行する
+  - @voluntas
+- [UPDATE] `prek.toml` を shiguredo-rust 規約に合わせて整備する
+  - builtin フックの拡充、`fuzz/target` の除外、フック記述の整理を行う
+  - @voluntas
+- [UPDATE] CI の runner を shiguredo-github-actions 規約に合わせる
+  - `windows-2025` を `windows-2025-vs2026` に、`ubuntu-latest` を `ubuntu-slim` に変更する
+  - @voluntas
+
 ## 2026.2.0
 
 **リリース日**: 2026-08-12
